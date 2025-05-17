@@ -1,0 +1,11 @@
+streamlit
+pandas
+numpy
+ta
+yfinance
+tensorflow
+plotly
+scikit-learn
+cloud-tpu-client
+imbalanced-learn
+optuna
