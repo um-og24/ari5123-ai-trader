@@ -11,15 +11,20 @@ import datetime
 import random
 from rf_agent import RFAgent
 from dqn_agent import DQNAgent
+from portfolio_tracker import PortfolioTracker
 from utils import Utils, FEATURE_COLUMNS
 
 class EnsembleAgent:
-    def __init__(self, ticker, start_date, end_date, model_dir, lookback, initial_cash, trade_fee, risk_per_trade, 
-                 max_trades_per_epoch, max_fee_per_epoch, atr_multiplier, atr_period, atr_smoothing, dqn_weight_scale,
-                 capital_type, reference_capital, capital_percentage, epochs, confirmation_steps, expected_feature_columns=FEATURE_COLUMNS):
+    def __init__(self, ticker, training_start_date, training_end_date, model_dir, lookback, initial_cash, trade_fee, risk_per_trade, 
+                max_trades_per_epoch, max_fee_per_epoch, atr_multiplier, atr_period, atr_smoothing, use_smote, dqn_weight_scale,
+                capital_type, reference_capital, capital_percentage, epochs, confirmation_steps, expected_feature_columns=FEATURE_COLUMNS):
+
+        if max_fee_per_epoch > 0 and max_fee_per_epoch < trade_fee * initial_cash:
+            Utils.log_message(f"WARNING: max_fee_per_epoch (€{max_fee_per_epoch:.2f}) may be too low for initial_cash (€{initial_cash:.2f}) and trade_fee ({trade_fee*100:.2f}%)")
+
         self.ticker = ticker
-        self.start_date = pd.Timestamp(start_date).date()
-        self.end_date = pd.Timestamp(end_date).date()
+        self.training_start_date = pd.Timestamp(training_start_date).date()
+        self.training_end_date = pd.Timestamp(training_end_date).date()
         self.lookback = lookback
         self.trade_fee = trade_fee
         self.initial_cash = initial_cash
@@ -29,6 +34,7 @@ class EnsembleAgent:
         self.atr_multiplier = atr_multiplier
         self.atr_period = atr_period
         self.atr_smoothing = atr_smoothing
+        self.use_smote = use_smote
         self.dqn_weight_scale = dqn_weight_scale
         self.capital_type = capital_type
         self.reference_capital = reference_capital
@@ -47,42 +53,47 @@ class EnsembleAgent:
         self.metrics_save_path = os.path.join(self.model_dir, f"{ticker}_ensemble_metrics.json")
         self.checkpoint_portfolio_path = os.path.join(self.model_dir, "checkpoints", f"{ticker}_checkpoint_portfolio.pkl")
 
-        self.data = self._get_data()
-        if self.data.empty:
-            raise ValueError(f"No data available for ticker {self.ticker} from {self.start_date} to {self.end_date}")
+        self.training_data = self.get_data(self.training_start_date, self.training_end_date)
+        if self.training_data.empty:
+            raise ValueError(f"No training data available for ticker {self.ticker} from {self.training_start_date} to {self.training_end_date}")
         
         self.dqn_agent = DQNAgent(
-            ticker=self.ticker, start_date=self.start_date, end_date=self.end_date, model_dir=self.model_dir,
+            ticker=self.ticker, training_start_date=self.training_start_date, training_end_date=self.training_end_date, model_dir=self.model_dir,
             lookback=self.lookback, initial_cash=self.initial_cash, trade_fee=self.trade_fee, risk_per_trade=self.risk_per_trade,
             atr_multiplier=self.atr_multiplier, atr_period=self.atr_period, atr_smoothing=self.atr_smoothing,
             expected_feature_columns=self.expected_feature_columns
         )
         self.rf_agent = RFAgent(
-            ticker=self.ticker, start_date=self.start_date, end_date=self.end_date, model_dir=self.model_dir,
-            lookback=self.lookback, trade_fee=self.trade_fee, expected_feature_columns=self.expected_feature_columns
+            ticker=self.ticker, training_start_date=self.training_start_date, training_end_date=self.training_end_date, model_dir=self.model_dir,
+            lookback=self.lookback, trade_fee=self.trade_fee, use_smote=self.use_smote, expected_feature_columns=self.expected_feature_columns
         )
         
         self.best_sharpe = -float("inf")
+        self.cumulative_fees = 0
+        self.fee_history = []
         self.reset_portfolio()
         self.sharpe_history = {'dqn': [], 'rf': []}
         self.cached_sharpe = {'dqn': 0.0, 'rf': 0.0, 'timestamp': None}
         self.cache_duration = 60.0
         self.load_model()
+        self.trading_data=None
 
-    def has_enough_data(self):
-        return (self.data is not None and not self.data.empty and len(self.data) >= self.lookback + self.dqn_agent.batch_size + 1)
+    def has_enough_training_data(self):
+        return (self.training_data is not None and not self.training_data.empty and len(self.training_data) >= self.lookback + self.dqn_agent.batch_size + 1)
 
-    def _get_data(self):
+    def get_data(self, start_date, end_date):
         try:
-            df = Utils.fetch_data(self.ticker, self.start_date, self.end_date)
+            df = Utils.fetch_data(self.ticker, start_date, end_date)
             if df.empty:
-                raise ValueError(f"No data fetched for {self.ticker} from {self.start_date} to {self.end_date}")
-            processed_df = Utils.preprocess_data(df, volatility_period=self.atr_period, atr_smoothing=self.atr_smoothing)
+                raise ValueError(f"No training_data fetched for {self.ticker} from {self.training_start_date} to {self.training_end_date}")
+
+            processed_df = Utils.preprocess_data(df, volatility_period=self.atr_period, atr_smoothing=self.atr_smoothing) if not set(FEATURE_COLUMNS).issubset(df.columns) else df
             if processed_df.empty:
-                raise ValueError(f"ERROR: Failed to preprocess data for {self.ticker}")
+                raise ValueError(f"ERROR: Failed to preprocess training_data for {self.ticker}")
+
             return processed_df
         except Exception as e:
-            Utils.log_message(f"ERROR: Error fetching data for {self.ticker}: {e}")
+            Utils.log_message(f"ERROR: Error fetching training_data for {self.ticker}: {e}")
             return pd.DataFrame()
 
     def reset_portfolio(self):
@@ -90,8 +101,8 @@ class EnsembleAgent:
         self.shares = 0
         self.portfolio_value_history = []
         self.returns = []
-        self.cumulative_fees = 0
-        self.fee_history = []
+        # self.cumulative_fees = 0
+        self.epoch_cumulative_fees = 0
         self.epoch_metrics = []
         self.portfolio_values = []
         self.epoch_trade_count = 0
@@ -116,25 +127,27 @@ class EnsembleAgent:
         except Exception as e:
             Utils.log_message(f"ERROR: Failed to save metrics: {e}")
 
-    def _save_settings(self):
+    def _save_settings(self, settings=None):
         settings = {
-            'ticker': self.ticker,
-            'lookback': self.lookback,
-            'initial_cash': self.initial_cash,
-            'trade_fee': self.trade_fee,
-            'risk_per_trade': self.risk_per_trade,
-            'max_trades_per_epoch': self.max_trades_per_epoch,
-            'max_fee_per_epoch': self.max_fee_per_epoch,
-            'atr_multiplier': self.atr_multiplier,
-            'atr_period': self.atr_period,
-            'atr_smoothing': self.atr_smoothing,
-            'dqn_weight_scale': self.dqn_weight_scale,
-            'capital_type': self.capital_type,
-            'reference_capital': self.reference_capital,
-            'capital_percentage': self.capital_percentage,
-            'epochs': self.epochs,
-            'confirmation_steps': self.confirmation_steps,
-            'expected_feature_columns': self.expected_feature_columns
+            'ticker': settings['ticker'] if settings else self.ticker,
+            'training_start_date': pd.Timestamp(settings['training_start_date'] if settings else self.training_start_date).isoformat(),
+            'training_end_date': pd.Timestamp(settings['training_end_date'] if settings else self.training_end_date).isoformat(),
+            'lookback': settings['lookback'] if settings else self.lookback,
+            'initial_cash': settings['initial_cash'] if settings else self.initial_cash,
+            'trade_fee': settings['trade_fee'] if settings else self.trade_fee,
+            'risk_per_trade': settings['risk_per_trade'] if settings else self.risk_per_trade,
+            'max_trades_per_epoch': settings['max_trades_per_epoch'] if settings else self.max_trades_per_epoch,
+            'max_fee_per_epoch': settings['max_fee_per_epoch'] if settings else self.max_fee_per_epoch,
+            'atr_multiplier': settings['atr_multiplier'] if settings else self.atr_multiplier,
+            'atr_period': settings['atr_period'] if settings else self.atr_period,
+            'atr_smoothing': settings['atr_smoothing'] if settings else self.atr_smoothing,
+            'use_smote': settings['use_smote'] if settings else self.use_smote,
+            'dqn_weight_scale': settings['dqn_weight_scale'] if settings else self.dqn_weight_scale,
+            'capital_type': settings['capital_type'] if settings else self.capital_type,
+            'reference_capital': settings['capital_percentage'] if settings else self.c,
+            'capital_percentage': settings['capital_percentage'] if settings else self.capital_percentage,
+            'epochs': settings['epochs'] if settings else self.epochs,
+            'confirmation_steps': settings['confirmation_steps'] if settings else self.confirmation_steps
         }
         try:
             os.makedirs(self.model_dir, exist_ok=True)
@@ -149,7 +162,8 @@ class EnsembleAgent:
             with open(self.settings_save_path, 'r') as f:
                 settings = json.load(f)
             self.ticker = settings.get('ticker', self.ticker)
-            self.start_date = settings.get('start_date', self.start_date)
+            self.training_start_date = pd.Timestamp(settings['training_start_date']).date()
+            self.training_end_date = pd.Timestamp(settings['training_end_date']).date()
             self.initial_cash = settings.get('initial_cash', self.initial_cash)
             self.trade_fee = settings.get('trade_fee', self.trade_fee)
             self.risk_per_trade = settings.get('risk_per_trade', self.risk_per_trade)
@@ -159,18 +173,21 @@ class EnsembleAgent:
             self.atr_multiplier = settings.get('atr_multiplier', self.atr_multiplier)
             self.atr_period = settings.get('atr_period', self.atr_period)
             self.atr_smoothing = settings.get('atr_smoothing', self.atr_smoothing)
+            self.use_smote = settings.get('use_smote', self.use_smote)
             self.dqn_weight_scale = settings.get('dqn_weight_scale', self.dqn_weight_scale)
             self.capital_type = settings.get('capital_type', self.capital_type)
             self.reference_capital = settings.get('reference_capital', self.reference_capital)
             self.capital_percentage = settings.get('capital_percentage', self.capital_percentage)
             self.epochs = settings.get('epochs', self.epochs)
             self.confirmation_steps = settings.get('confirmation_steps', self.confirmation_steps)
-            self.expected_feature_columns = settings.get('expected_feature_columns', self.expected_feature_columns)
             Utils.log_message(f"INFO: Loaded ensemble settings from {self.settings_save_path}: {settings}")
             return settings
         else:
             Utils.log_message(f"INFO: No ensemble settings file found at {self.settings_save_path}")
         return None
+
+    def update_settings(self, new_settings):
+        self._save_settings(new_settings)
 
     def load_model(self):
         saved_settings = self._load_settings()
@@ -180,8 +197,8 @@ class EnsembleAgent:
                 initial_cash=saved_settings['initial_cash'],
                 lookback=saved_settings['lookback'],
                 ticker=saved_settings['ticker'],
-                start_date=self.start_date,
-                end_date=self.end_date,
+                training_start_date=self.training_start_date,
+                training_end_date=self.training_end_date,
                 trade_fee=saved_settings['trade_fee'],
                 risk_per_trade=saved_settings['risk_per_trade'],
                 atr_multiplier=saved_settings['atr_multiplier'],
@@ -192,9 +209,10 @@ class EnsembleAgent:
                 model_dir=self.model_dir,
                 lookback=saved_settings['lookback'],
                 ticker=saved_settings['ticker'],
-                start_date=self.start_date,
-                end_date=self.end_date,
-                trade_fee=saved_settings['trade_fee']
+                training_start_date=self.training_start_date,
+                training_end_date=self.training_end_date,
+                trade_fee=saved_settings['trade_fee'],
+                use_smote=saved_settings['use_smote']
             )
         self.dqn_agent.load_model()
         self.rf_agent.load_model()
@@ -223,8 +241,8 @@ class EnsembleAgent:
     def get_configuration_settings(self):
         return {
             'ticker': self.ticker,
-            'start_date': self.start_date,
-            'end_date': self.end_date,
+            'training_start_date': self.training_start_date,
+            'training_end_date': self.training_end_date,
             'model_dir': self.model_dir,
             'initial_cash': self.initial_cash,
             'trade_fee': self.trade_fee,
@@ -236,6 +254,7 @@ class EnsembleAgent:
             'atr_multiplier': self.atr_multiplier,
             'atr_period': self.atr_period,
             'atr_smoothing': self.atr_smoothing,
+            'use_smote': self.use_smote,
             'capital_type': self.capital_type,
             'reference_capital': self.reference_capital,
             'capital_percentage': self.capital_percentage,
@@ -254,10 +273,10 @@ class EnsembleAgent:
             settings_copy = {}
         else:
             settings_copy = settings.copy()
-            if settings_copy.get('start_date'):
-                settings_copy['start_date'] = pd.Timestamp(settings_copy['start_date']).isoformat()
-            if settings_copy.get('end_date'):
-                settings_copy['end_date'] = pd.Timestamp(settings_copy['end_date']).isoformat()
+            if settings_copy.get('training_start_date'):
+                settings_copy['training_start_date'] = pd.Timestamp(settings_copy['training_start_date']).isoformat()
+            if settings_copy.get('training_end_date'):
+                settings_copy['training_end_date'] = pd.Timestamp(settings_copy['training_end_date']).isoformat()
 
         self.dqn_agent.save_checkpoint(epoch, epsilon)
         self.rf_agent.save_checkpoint()
@@ -304,14 +323,15 @@ class EnsembleAgent:
                 self.atr_multiplier = loaded_settings.get('atr_multiplier', self.atr_multiplier)
                 self.atr_period = loaded_settings.get('atr_period', self.atr_period)
                 self.atr_smoothing = loaded_settings.get('atr_smoothing', self.atr_smoothing)
+                self.use_smote = loaded_settings.get('use_smote', self.use_smote)
                 self.dqn_weight_scale = loaded_settings.get('dqn_weight_scale', self.dqn_weight_scale)
                 if loaded_settings:
-                    if loaded_settings.get('start_date'):
-                        loaded_settings['start_date'] = pd.Timestamp(loaded_settings['start_date']).date()
-                    if loaded_settings.get('end_date'):
-                        loaded_settings['end_date'] = pd.Timestamp(loaded_settings['end_date']).date()
-                    self.start_date = loaded_settings['start_date']
-                    self.end_date = loaded_settings['end_date']
+                    if loaded_settings.get('training_start_date'):
+                        loaded_settings['training_start_date'] = pd.Timestamp(loaded_settings['training_start_date']).date()
+                    if loaded_settings.get('training_end_date'):
+                        loaded_settings['training_end_date'] = pd.Timestamp(loaded_settings['training_end_date']).date()
+                    self.training_start_date = loaded_settings['training_start_date']
+                    self.training_end_date = loaded_settings['training_end_date']
                     Utils.log_message(f"DEBUG: Loaded checkpoint settings: {loaded_settings}")
                 else:
                     Utils.log_message(f"WARNING: No settings found in checkpoint, using input settings")
@@ -338,97 +358,63 @@ class EnsembleAgent:
             os.rmdir(checkpoint_dir)
             Utils.log_message(f"INFO: Removed empty checkpoints directory")
 
-    def _calculate_reward(self, prev_value, curr_value, action, data, index, fee_history):
-        ret = (curr_value - prev_value) / (prev_value + 1e-9)
-        fee_penalty = 0
-        reward = 0
-        volatility = data['Close'].pct_change().rolling(14).std().iloc[index]
-        if pd.isna(volatility) or volatility == 0:
-            volatility = 0.02
-        if self.portfolio_value_history:
-            max_value = np.max(self.portfolio_value_history)
-            drawdown = (max_value - curr_value) / (max_value + 1e-9)
-            drawdown_penalty = drawdown * 0.5 if action != 2 else drawdown * 0.2  # Reduced penalty for selling
-        else:
-            drawdown_penalty = 0.0
-        if action != 0 and fee_history:
-            recent_fees = fee_history[-1]
-            portfolio_scale = curr_value / (self.initial_cash + 1e-9)
-            volatility_factor = 0.5 if action == 2 else 1.0  # Reduced volatility impact for selling
-            fee_penalty = recent_fees * (1.0 + volatility / 0.02 * volatility_factor) / portfolio_scale
-            if action == 2:
-                reward += 0.5  # Baseline reward for selling
-                current_rsi_div = data['RSI_Divergence'].iloc[index]
-                current_bb_pen = data.get('BB_Penetration', pd.Series(0)).iloc[index]
-                if current_rsi_div == 1:
-                    reward += 0.5
-                if current_bb_pen == 1:
-                    reward += 0.3
-        elif action == 0 and volatility > 0.03:
-            reward = 0.1
-        epoch_returns = [ret]
-        if len(self.returns) > 1:
-            epoch_returns.extend(self.returns[-49:])
-            mean_ret = np.mean(epoch_returns)
-            std_ret = np.std(epoch_returns) + 1e-9
-            reward = mean_ret / std_ret - fee_penalty - drawdown_penalty
-        else:
-            reward = reward - fee_penalty - drawdown_penalty
-        return float(reward)
 
     def train(self, current_epoch, max_epochs, portfolio_values=None, progress_callback=None):
-        state_data = self.data[self.expected_feature_columns].dropna()
-        if state_data.empty:
-            Utils.log_message(f"ERROR: No valid state data available for fitting state scaler.")
+        state_training_data = self.training_data[self.expected_feature_columns].dropna()
+        if state_training_data.empty:
+            Utils.log_message(f"ERROR: No valid state training_data available for fitting state scaler.")
             return [], {}, {}
         
-        self.dqn_agent.state_scaler.fit(state_data)
+        self.dqn_agent.state_scaler.fit(state_training_data)
         Utils.log_message(f"DEBUG: State scaler fitted with {self.dqn_agent.state_scaler.n_features_in_} features, mean: {self.dqn_agent.state_scaler.mean_[:5]}")
 
-        data = self.dqn_agent.preprocess_data(self.data)
-        if len(data) == 0:
-            Utils.log_message(f"ERROR: No valid preprocessed data available for training.")
+        training_data = self.dqn_agent.preprocess_data(self.training_data)
+        if len(training_data) == 0:
+            Utils.log_message(f"ERROR: No valid preprocessed training_data available for training.")
             return [], {}, {}
-        if len(self.data) < self.lookback + 1:
-            Utils.log_message(f"ERROR: Insufficient data: {len(self.data)} rows, need at least {self.lookback + 1}")
+
+        if len(self.training_data) < self.lookback + 1:
+            Utils.log_message(f"ERROR: Insufficient training_data: {len(self.training_data)} rows, need at least {self.lookback + 1}")
             return [], {}, {}
         
-        Utils.log_message(f"INFO: Training epoch {current_epoch + 1} with data length: {len(self.data)}, preprocessed states: {len(data)}")
+        Utils.log_message(f"INFO: Training epoch {current_epoch + 1} with training_data length: {len(self.training_data)}, preprocessed states: {len(training_data)}")
         
         self.portfolio_values = portfolio_values if portfolio_values is not None else []
 
-        if current_epoch == 0:
+        if current_epoch == 0: # Reset's the portfolio only at the start of training
             self.reset_portfolio()
-            initial_cash = getattr(self, 'initial_cash', 10000)
-            Utils.log_message(f"INFO: Portfolio reset at epoch 0 with initial cash: €{initial_cash:.2f}")
+            initial_cash = self.initial_cash
+            Utils.log_message(f"INFO: Portfolio reset at epoch {current_epoch + 1} with initial cash: €{initial_cash:.2f}")
 
         current_cash = self.dqn_agent.cash
-        min_cash_threshold = getattr(self, 'initial_cash', 10000) * 0.01
+        min_cash_threshold = self.initial_cash * self.trade_fee
         if current_cash < min_cash_threshold:
             Utils.log_message(f"WARNING: Cash (€{current_cash:.2f}) below threshold (€{min_cash_threshold:.2f}) at epoch {current_epoch + 1}. Resetting portfolio.")
             self.reset_portfolio()
-            current_cash = getattr(self, 'initial_cash', 10000)
+            current_cash = self.initial_cash
             Utils.log_message(f"INFO: Portfolio reset with cash: €{current_cash:.2f}")
         
         self.epoch_trade_count = 0
-        self.cumulative_fees = 0
-        self.fee_history = []
+        self.epoch_cumulative_fees = 0  # Track fees for this epoch
         self.returns = self.returns.copy() if self.returns else []
         
-        if not self.rf_agent.rf_model or not os.path.exists(self.rf_agent.rf_best_model_save_path) or current_epoch == 0:
+        if not self.rf_agent or not os.path.exists(self.rf_agent.rf_best_model_save_path) or current_epoch == 0:
             Utils.log_message(f"INFO: Training RF Agent independently")
-            self.rf_agent.train(self.data, progress_callback=progress_callback)
+            self.rf_agent.train(self.training_data, progress_callback=progress_callback)
 
-        if not self.rf_agent.rf_model:
-            Utils.log_message(f"ERROR: RFAgent model not loaded after training. Falling back to default model.")
-            from sklearn.ensemble import RandomForestClassifier
-            self.rf_agent.rf_model = RandomForestClassifier(
-                n_estimators=100, max_depth=5, min_samples_split=5, min_samples_leaf=5, random_state=42
-            )
+        if not self.rf_agent:
+            Utils.log_message(f"ERROR: RFAgent model not loaded after training. Attempting to train with diverse labels.")
             try:
-                state_data_subset = state_data.iloc[-self.lookback:].values
-                labels = np.zeros(len(state_data_subset))
-                self.rf_agent.rf_model.fit(state_data_subset, labels)
+                state_data_subset = state_training_data.iloc[-self.lookback:].values
+                labels = self.rf_agent._create_labels(self.training_data.iloc[-self.lookback-1:])
+                if len(np.unique(labels)) < 2:
+                    Utils.log_message(f"ERROR: Default RF model training failed: Only one label in data.")
+                    raise ValueError("Insufficient label diversity for default RF model")
+                from sklearn.ensemble import RandomForestClassifier
+                self.rf_agent = RandomForestClassifier(
+                    n_estimators=100, max_depth=5, min_samples_split=5, min_samples_leaf=5, random_state=42
+                )
+                self.rf_agent.fit(state_data_subset, labels)
                 Utils.log_message(f"INFO: Initialized default RF model with {len(state_data_subset)} samples.")
             except Exception as e:
                 Utils.log_message(f"ERROR: Failed to initialize default RF model: {e}. Skipping epoch.")
@@ -457,24 +443,27 @@ class EnsembleAgent:
         epoch_returns = []
         action_counts = {'Hold': 0, 'Buy': 0, 'Sell': 0}
         
-        for t in range(self.lookback, len(self.data) - 1):
-            if t >= len(data) + self.lookback:
-                Utils.log_message(f"ERROR: Index t={t} exceeds preprocessed data length {len(data)}")
+        # Initialize PortfolioTracker for this epoch
+        portfolio_tracker = PortfolioTracker(self.initial_cash)
+        
+        for t in range(self.lookback, len(self.training_data) - 1):
+            if t >= len(training_data) + self.lookback:
+                Utils.log_message(f"ERROR: Index t={t} exceeds preprocessed training_data length {len(training_data)}")
                 break
-            state = data[t - self.lookback]
+            state = training_data[t - self.lookback]
             action = self.act(state)
-            price = self.data['Close'].iloc[t]
-            prev_value = self.dqn_agent.simulate_trade(action, price, data=self.data, index=t, 
-                                             max_trades_per_epoch=self.max_trades_per_epoch, 
-                                             max_fee_per_epoch=self.max_fee_per_epoch)
-            next_price = self.data['Close'].iloc[t + 1]
+            price = self.training_data['Close'].iloc[t]
+            prev_value = self.dqn_agent.simulate_trade(action, price, data=self.training_data, index=t, 
+                                            max_trades_per_epoch=self.max_trades_per_epoch, 
+                                            max_fee_per_epoch=self.max_fee_per_epoch,
+                                            portfolio_tracker=portfolio_tracker)
+            next_price = self.training_data['Close'].iloc[t + 1]
             curr_value = self.dqn_agent.simulate_trade(None, next_price, max_trades_per_epoch=self.max_trades_per_epoch,
-                                                       max_fee_per_epoch=self.max_fee_per_epoch, data=self.data, index=t + 1)
-            ret = (curr_value - prev_value) / (prev_value + 1e-9)
-            epoch_returns.append(ret)
-            reward = self._calculate_reward(prev_value, curr_value, action, self.data, t, self.fee_history)
-            done = (t == len(self.data) - 2)
-            next_state = data[t - self.lookback + 1] if t < len(data) + self.lookback - 1 else data[-1]
+                                                    max_fee_per_epoch=self.max_fee_per_epoch, data=self.training_data, index=t + 1,
+                                                    portfolio_tracker=portfolio_tracker)
+            reward, ret = Utils.calculate_reward(prev_value, curr_value, action, self.dqn_agent.fee_history, self.portfolio_value_history, self.training_data, t, self.initial_cash, epoch_returns)
+            done = (t == len(self.training_data) - 2)
+            next_state = training_data[t - self.lookback + 1] if t < len(training_data) + self.lookback - 1 else training_data[-1]
             self.dqn_agent.remember(state, action, reward, next_state, done)
             self.dqn_agent.replay()
             total_reward += float(reward)
@@ -482,8 +471,10 @@ class EnsembleAgent:
             action_name = ['Hold', 'Buy', 'Sell'][action]
             action_counts[action_name] += 1
             self.action_counts[action_name] += 1
-            if action in [1, 2] and self.fee_history and self.fee_history[-1] > 0:
+            if action in [1, 2] and self.dqn_agent.fee_history and self.dqn_agent.fee_history[-1] > 0:
                 num_trades += 1
+                self.epoch_cumulative_fees += self.dqn_agent.fee_history[-1]
+                self.cumulative_fees += self.dqn_agent.fee_history[-1]
             if done:
                 self.dqn_agent.update_target_model()
                 Utils.log_message(f"INFO: Ensemble training completed - Total Reward: {total_reward:.4f}, Trades: {num_trades}, Action Counts: {action_counts}")
@@ -522,13 +513,13 @@ class EnsembleAgent:
                 "Portfolio Value (€)": "0.00",
                 "Current Cash (€)": f"{current_cash:.2f}",
                 "Max Drawdown (€)": f"{drawdown:.2f}",
-                "Cumulative Fees (€)": f"{self.cumulative_fees:.2f}",
+                "Cumulative Fees (€)": f"{portfolio_tracker.total_fees:.2f}",
                 "Avg Return": f"{np.mean(epoch_returns) if epoch_returns else 0.0:.4f}",
                 "Total Reward": f"{total_reward:.4f}",
                 "Buy Actions": action_counts['Buy'],
                 "Sell Actions": action_counts['Sell'],
                 "Hold Actions": action_counts['Hold'],
-                "Number of Trades": num_trades
+                "Total Trades": num_trades
             }
 
         epoch_metrics_dict = {
@@ -538,16 +529,17 @@ class EnsembleAgent:
             "Portfolio Value (€)": f"{portfolio_values[-1]:.2f}",
             "Current Cash (€)": f"{current_cash:.2f}",
             "Max Drawdown (€)": f"{drawdown:.2f}",
-            "Cumulative Fees (€)": f"{self.cumulative_fees:.2f}",
+            "Cumulative Fees (€)": f"{portfolio_tracker.total_fees:.2f}",
+            "Epoch Cumulative Fees (€)": f"{self.epoch_cumulative_fees:.2f}",
             "Avg Return": f"{np.mean(epoch_returns) if epoch_returns else 0.0:.4f}",
             "Buy Actions": action_counts['Buy'],
             "Sell Actions": action_counts['Sell'],
             "Hold Actions": action_counts['Hold'],
-            "Number of Trades": num_trades,
+            "Total Trades": num_trades,
             "Total Reward": f"{total_reward:.4f}"
         }
         
-        Utils.log_message(f"INFO: Epoch {current_epoch + 1} - Sharpe Ratio: {sharpe:.4f} / {best_sharpe:.4f} - Drawdown: {drawdown:.2f} - Total Reward: {total_reward:.4f} - Trades: {num_trades} - Avg Return: {np.mean(epoch_returns) if epoch_returns else 0.0:.4f} - Epsilon: {self.dqn_agent.epsilon:.3f} - Fees: {self.cumulative_fees:.2f} - Portfolio Value: {portfolio_values[-1] if portfolio_values else 0.0:.2f} - Trade Count: {self.epoch_trade_count}/{self.max_trades_per_epoch} - Cash: {current_cash:.2f} - Buy Actions: {action_counts['Buy']} - Sell Actions: {action_counts['Sell']} - Hold Actions: {action_counts['Hold']}")
+        Utils.log_message(f"INFO: Epoch {current_epoch + 1} - Sharpe Ratio: {sharpe:.4f} / {best_sharpe:.4f} - Drawdown: {drawdown:.2f} - Total Reward: {total_reward:.4f} - Trades: {num_trades} - Avg Return: {np.mean(epoch_returns) if epoch_returns else 0.0:.4f} - Epsilon: {self.dqn_agent.epsilon:.3f} - Fees: {portfolio_tracker.total_fees:.2f} - Epoch Fees: {self.epoch_cumulative_fees:.2f} - Portfolio Value: {portfolio_values[-1] if portfolio_values else 0.0:.2f} - Trade Count: {self.epoch_trade_count}/{self.max_trades_per_epoch} - Cash: {current_cash:.2f} - Buy Actions: {action_counts['Buy']} - Sell Actions: {action_counts['Sell']} - Hold Actions: {action_counts['Hold']}")
         
         if sharpe > self.best_sharpe:
             self.best_sharpe = sharpe
@@ -574,9 +566,9 @@ class EnsembleAgent:
         drawdown = np.max(np.maximum.accumulate(values) - values)
         return sharpe_ratio, drawdown, self.cumulative_fees, self.best_sharpe
 
-    def preprocess_data(self, data=None):
-        data = data if data is not None else self.data
-        return self.dqn_agent.preprocess_data(data)
+    def preprocess_training_data(self, training_data=None):
+        training_data = training_data if training_data is not None else self.training_data
+        return self.dqn_agent.preprocess_training_data(training_data)
 
     def act(self, state):
         dqn_action = self.dqn_agent.act(state)
@@ -587,8 +579,8 @@ class EnsembleAgent:
         Utils.log_message(f"INFO: Ensemble action: {action} ({action_name}), DQN={dqn_action}, RF={rf_action}, Counts: {self.action_counts}")
         return action
 
-    def _prepare_state(self, data, index):
-        window = data.iloc[index-self.lookback:index][self.expected_feature_columns]
+    def _prepare_state(self, training_data, index):
+        window = training_data.iloc[index-self.lookback:index][self.expected_feature_columns]
         dqn_state = window.values  # (lookback, n_features)
         rf_state = window.values.flatten().reshape(1, -1)  # (1, lookback * n_features)
         return dqn_state, rf_state
@@ -649,8 +641,8 @@ class EnsembleAgent:
         saved_settings = self._load_settings() or {}
         current_settings = {
             'ticker': self.ticker,
-            'start_date': self.start_date,
-            'end_date': self.end_date,
+            'training_start_date': self.training_start_date,
+            'training_end_date': self.training_end_date,
             'lookback': self.lookback,
             'trade_fee': self.trade_fee,
             'risk_per_trade': self.risk_per_trade,
@@ -664,8 +656,7 @@ class EnsembleAgent:
             'reference_capital': self.reference_capital,
             'capital_percentage': self.capital_percentage,
             'epochs': self.epochs,
-            'confirmation_steps': self.confirmation_steps,
-            'expected_feature_columns': self.expected_feature_columns
+            'confirmation_steps': self.confirmation_steps
         }
         mismatches = []
         for key in current_settings:
@@ -708,30 +699,30 @@ class EnsembleAgent:
             drift_threshold = 3.0
             if (np.any(mean_z_score_rf > drift_threshold) or std_z_score_rf > drift_threshold or
                 np.any(mean_z_score_dqn > drift_threshold) or std_z_score_dqn > drift_threshold):
-                Utils.log_message(f"WARNING: Data drift detected: RF Mean z-score={mean_z_score_rf.max():.2f}, RF Std z-score={std_z_score_rf:.2f}, DQN Mean z-score={mean_z_score_dqn.max():.2f}, DQN Std z-score={std_z_score_dqn:.2f}")
+                Utils.log_message(f"WARNING: training_data drift detected: RF Mean z-score={mean_z_score_rf.max():.2f}, RF Std z-score={std_z_score_rf:.2f}, DQN Mean z-score={mean_z_score_dqn.max():.2f}, DQN Std z-score={std_z_score_dqn:.2f}")
                 return True
             return False
         except Exception as e:
             Utils.log_message(f"ERROR: Error in drift detection: {e}")
             return False
 
-    def predict_live_action(self, state):
+    def predict_live_action(self, state, start_date=None, end_date=None):
         is_valid, mismatches = self._validate_settings()
         if not is_valid:
             Utils.log_message(f"WARNING: Proceeding with prediction despite settings mismatches: {mismatches}")
         
-        if self._detect_data_drift(state):
-            Utils.log_message(f"INFO: Triggering RFAgent retraining due to data drift")
-            recent_data = self._get_data()
-            if not recent_data.empty:
-                self.rf_agent.train(recent_data, force_grid_search=False)
+        if start_date is not None and end_date is not None and self._detect_data_drift(state):
+            Utils.log_message(f"INFO: Triggering RFAgent retraining due to trading_data drift")
+            recent_trading_data = self.get_data(start_date, end_date)
+            if not recent_trading_data.empty:
+                self.rf_agent.train(recent_trading_data, force_grid_search=False)
                 Utils.log_message(f"INFO: RFAgent retrained with updated PCA model")
-                state_data = recent_data[self.expected_feature_columns].dropna()
-                if not state_data.empty:
-                    self.dqn_agent.state_scaler.fit(state_data)
-                    Utils.log_message(f"INFO: DQN state scaler updated due to data drift")
+                state_training_data = recent_trading_data[self.expected_feature_columns].dropna()
+                if not state_training_data.empty:
+                    self.dqn_agent.state_scaler.fit(state_training_data)
+                    Utils.log_message(f"INFO: DQN state scaler updated due to trading_data drift")
             else:
-                Utils.log_message(f"ERROR: Failed to fetch recent data for retraining")
+                Utils.log_message(f"WARNING: Skipping fetch recent trading data ({start_date} - {end_date}) for retraining due to data drift detection")
         
         dqn_action, dqn_probabilities = self.dqn_agent.predict(state)
         dqn_probabilities[1] -= dqn_probabilities[1] * self.trade_fee
@@ -741,3 +732,61 @@ class EnsembleAgent:
         action = int(self._ensemble_action(dqn_action, rf_action, state))
         Utils.log_message(f"INFO: Ensemble live action: {action}, DQN={dqn_action}, RF={rf_action}, DQN Prob={dqn_probabilities}, RF Prob={rf_proba}")
         return action, dqn_probabilities
+
+
+    @staticmethod
+    def init_a_new_agent(settings):
+        def assert_agent_training_data(agent, settings):
+            if not agent.has_enough_training_data():
+                raise ValueError("Agent does not have enough training_data for the selected lookback window and batch size. Please select a wider date range or reduce the lookback/batch size.")
+            else:
+                full_training_data = agent.training_data.copy()
+
+            full_training_data = full_training_data[(full_training_data.index.date >= settings['training_start_date']) & (full_training_data.index.date <= settings['training_end_date'])]
+
+            if full_training_data.empty:
+                raise ValueError("No training_data available for the selected date range.")
+
+            if isinstance(full_training_data.columns, pd.MultiIndex):
+                full_training_data.columns = [col[0] for col in full_training_data.columns]
+
+            batch_size = agent.dqn_agent.batch_size if agent.dqn_agent is not None else 64
+            if len(full_training_data) < settings['lookback'] + batch_size + 1:
+                raise ValueError("Not enough training_data for the selected lookback window and batch size. Please select a wider date range or reduce the lookback/batch size.")
+
+            if len(full_training_data) > 0:
+                current_price = full_training_data['Close'].iloc[-1]
+                min_trade_cost = current_price * (1 + settings['trade_fee'])
+                if settings['initial_cash'] < min_trade_cost:
+                    raise ValueError(f"Initial capital (€{settings['initial_cash']:.2f}) is too low to buy one share at €{current_price:.2f} with fee {settings['trade_fee']*100:.2f}%. Please increase capital.")
+
+            return full_training_data
+
+        agent = EnsembleAgent(
+            ticker=settings['ticker'],
+            training_start_date=settings['training_start_date'],
+            training_end_date=settings['training_end_date'],
+            model_dir=settings['model_dir'],
+            lookback=settings['lookback'],
+            trade_fee=settings['trade_fee'],
+            initial_cash=settings['initial_cash'],
+            risk_per_trade=settings['risk_per_trade'],
+            max_trades_per_epoch=settings['max_trades_per_epoch'],
+            max_fee_per_epoch=settings['max_fee_per_epoch'],
+            atr_multiplier=settings['atr_multiplier'],
+            atr_period=settings['atr_period'],
+            atr_smoothing=settings['atr_smoothing'],
+            use_smote=settings['use_smote'],
+            dqn_weight_scale=settings['dqn_weight_scale'],
+            capital_type=settings['capital_type'],
+            reference_capital=settings['reference_capital'],
+            capital_percentage=settings['capital_percentage'],
+            epochs=settings['epochs'],
+            confirmation_steps=settings['confirmation_steps']
+        )
+
+        Utils.log_message(f"INFO: Initializing new EnsembleAgent for {agent.ticker} between {agent.training_start_date} and {agent.training_end_date}: {settings}")
+
+        agent.training_training_data = assert_agent_training_data(agent, settings)
+
+        return agent

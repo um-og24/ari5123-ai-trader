@@ -26,8 +26,8 @@ class Calculations:
 
         Returns:
             dict: Metrics containing sharpe_ratio, sortino_ratio, calmar_ratio, max_drawdown,
-                  current_drawdown, total_return, var, cvar.
-                  Returns zeros if insufficient data.
+                current_drawdown, total_return, var, cvar.
+                Returns zeros if insufficient data.
         """
         try:
             values = np.array([Calculations.to_scalar(h[value_key]) for h in history if h[value_key] is not None])
@@ -157,8 +157,8 @@ class Calculations:
         smote = SMOTE(random_state=random_state, k_neighbors=k_neighbors)
         X_train, y_train = smote.fit_resample(X_train, y_train)
         unique, counts = np.unique(y_train, return_counts=True)
-        post_smote_label_distribution = dict(zip(unique, counts))
-        return post_smote_label_distribution
+        label_distribution = dict(zip(unique, counts))
+        return X_train, y_train, label_distribution
 
     @staticmethod
     def apply_pca(X_train, X_val, n_components=0.95, random_state=42):

@@ -15,14 +15,14 @@ class ChartBuilder:
     """Centralized class for creating Plotly charts for portfolio and training visualization."""
     
     @staticmethod
-    def plot_portfolio_performance(history, title='Portfolio Performance Over Time', show_cash_positions=True, show_metrics=True):
+    def plot_portfolio_performance(history, metrics, title='Performance Over Time', show_cash_positions=True, show_metrics=True):
         """
         Plot portfolio total value, cash, position value, and drawdown over time with trade P&L annotations
         and a metrics table (Sharpe, Sortino, Calmar, VaR, CVaR).
 
         Args:
             history (list[dict]): Portfolio history with timestamp, total_value, cash, position_value,
-                                 and optionally trades (list of {'timestamp': str, 'pnl': float}).
+                                and optionally trades (list of {'timestamp': str, 'pnl': float}).
             title (str): Chart title.
             show_cash_positions (bool): If True, include cash and position value traces.
             show_metrics (bool): If True, display metrics table (Sharpe, Sortino, Calmar, VaR, CVaR).
@@ -42,9 +42,6 @@ class ChartBuilder:
             total_values_np = np.array(total_values)
             peak_values = np.maximum.accumulate(total_values_np)
             drawdowns = (peak_values - total_values_np) / peak_values * 100
-            
-            # Compute metrics
-            metrics = Calculations.compute_metrics(history, value_key='total_value')
             
             # Create figure with secondary y-axis for drawdown
             fig = make_subplots(specs=[[{"secondary_y": True}]])
@@ -144,12 +141,12 @@ class ChartBuilder:
                 )
                 fig.add_annotation(
                     xref="paper", yref="paper",
-                    x=0.01, y=0.99,
+                    x=0.01, y=0.53,
                     text=metrics_table,
                     showarrow=False,
                     font=dict(size=12),
                     align="left",
-                    bgcolor="white",
+                    bgcolor="black",
                     bordercolor="black",
                     borderpad=4
                 )
@@ -158,6 +155,195 @@ class ChartBuilder:
         except Exception as e:
             Utils.log_message(f"ERROR: Error plotting portfolio performance: {e}")
             return go.Figure()
+
+    @staticmethod
+    def plot_transaction_history(data, portfolio, context, chart_placeholder):
+        """
+        Plot stock price with executed transactions, Volume, RSI, and MACD.
+
+        Args:
+            data (pd.DataFrame): DataFrame with stock price data (Open, High, Low, Close, Volume, SMA20, BB_Upper, BB_Lower, RSI, MACD).
+            portfolio (PortfolioTracker): PortfolioTracker instance containing transactions list.
+            chart_placeholder: Streamlit placeholder for rendering the chart.
+
+        Returns:
+            None: Renders the Plotly chart in the provided placeholder.
+        """
+        try:
+            fig = make_subplots(
+                rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.05,
+                subplot_titles=['Stock Price with Transactions', 'Volume', 'RSI', 'MACD'],
+                row_heights=[0.5, 0.2, 0.15, 0.15]
+            )
+
+            # Candlestick chart for stock price
+            fig.add_trace(
+                go.Candlestick(
+                    x=data.index,
+                    open=data['Open'],
+                    high=data['High'],
+                    low=data['Low'],
+                    close=data['Close'],
+                    name='Price',
+                    increasing_line_color='green',
+                    decreasing_line_color='red'
+                ),
+                row=1, col=1
+            )
+
+            # SMA20 and Bollinger Bands
+            fig.add_trace(
+                go.Scatter(
+                    x=data.index,
+                    y=data['SMA20'],
+                    mode='lines',
+                    name='SMA20',
+                    line=dict(color='blue', width=2)
+                ),
+                row=1, col=1
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=data.index,
+                    y=data['BB_Upper'],
+                    mode='lines',
+                    name='BB Upper',
+                    line=dict(color='purple', width=1, dash='dash')
+                ),
+                row=1, col=1
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=data.index,
+                    y=data['BB_Lower'],
+                    mode='lines',
+                    name='BB Lower',
+                    line=dict(color='purple', width=1, dash='dash')
+                ),
+                row=1, col=1
+            )
+
+            # Process transactions
+            if portfolio.transactions:
+                trans_df = pd.DataFrame(portfolio.transactions)
+                trans_df['timestamp'] = pd.to_datetime(trans_df['timestamp'])
+
+                # Filter transactions within the data's date range
+                trans_df = trans_df[
+                    (trans_df['timestamp'] >= data.index.min()) &
+                    (trans_df['timestamp'] <= data.index.max())
+                ]
+
+                # Buy transactions
+                buy_trans = trans_df[trans_df['action'] == 'Buy']
+                if not buy_trans.empty:
+                    fig.add_trace(
+                        go.Scatter(
+                            x=buy_trans['timestamp'],
+                            y=buy_trans['price'],
+                            mode='markers',
+                            name='Buy Transaction',
+                            marker=dict(symbol='triangle-up', size=10, color='green'),
+                            text=[f"ID: {id}<br>Qty: {qty}<br>Price: €{price:.2f}<br>Fee: €{fee:.2f}"
+                                for id, qty, price, fee in zip(buy_trans['id'], buy_trans['quantity'], buy_trans['price'], buy_trans['fee'])],
+                            hoverinfo='text'
+                        ),
+                        row=1, col=1
+                    )
+
+                # Sell transactions
+                sell_trans = trans_df[trans_df['action'] == 'Sell']
+                if not sell_trans.empty:
+                    fig.add_trace(
+                        go.Scatter(
+                            x=sell_trans['timestamp'],
+                            y=sell_trans['price'],
+                            mode='markers',
+                            name='Sell Transaction',
+                            marker=dict(symbol='triangle-down', size=10, color='red'),
+                            text=[f"ID: {id}<br>Qty: {qty}<br>Price: €{price:.2f}<br>Fee: €{fee:.2f}<br>P&L: €{pnl:.2f}"
+                                for id, qty, price, fee, pnl in zip(sell_trans['id'], sell_trans['quantity'], sell_trans['price'], sell_trans['fee'], sell_trans['pnl'])],
+                            hoverinfo='text'
+                        ),
+                        row=1, col=1
+                    )
+
+                # Connect transactions with a dotted line
+                trade_trans = trans_df[trans_df['action'].isin(['Buy', 'Sell'])]
+                if len(trade_trans) > 1:
+                    fig.add_trace(
+                        go.Scatter(
+                            x=trade_trans['timestamp'],
+                            y=trade_trans['price'],
+                            mode='lines',
+                            name='Transaction Line',
+                            line=dict(color='orange', width=2, dash='dot')
+                        ),
+                        row=1, col=1
+                    )
+
+            # Volume subplot
+            fig.add_trace(
+                go.Bar(
+                    x=data.index,
+                    y=data['Volume'],
+                    name='Volume',
+                    marker_color='grey',
+                    opacity=0.5
+                ),
+                row=2, col=1
+            )
+
+            # RSI subplot
+            fig.add_trace(
+                go.Scatter(
+                    x=data.index,
+                    y=data['RSI'],
+                    mode='lines',
+                    name='RSI',
+                    line=dict(color='orange', width=2)
+                ),
+                row=3, col=1
+            )
+            fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
+            fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
+
+            # MACD subplot
+            fig.add_trace(
+                go.Scatter(
+                    x=data.index,
+                    y=data['MACD'],
+                    mode='lines',
+                    name='MACD',
+                    line=dict(color='cyan', width=2)
+                ),
+                row=4, col=1
+            )
+            fig.add_hline(y=0, line_dash="dash", line_color="black", row=4, col=1)
+
+            # Update layout
+            fig.update_layout(
+                title='Transaction History for Stock Price',
+                xaxis4_title='Date',
+                yaxis_title='Price (€)',
+                yaxis2_title='Volume',
+                yaxis3_title='RSI',
+                yaxis4_title='MACD',
+                showlegend=True,
+                template='plotly_white',
+                height=800
+            )
+            fig.update_xaxes(
+                tickformat='%Y-%m-%d',
+                rangeslider_visible=False,
+                row=4, col=1
+            )
+
+            chart_placeholder.plotly_chart(fig, key=f"trans_history_plot_{context}", use_container_width=True)
+
+        except Exception as e:
+            Utils.log_message(f"ERROR: Error plotting transaction history: {e}")
+            chart_placeholder.plotly_chart(go.Figure())
 
     @staticmethod
     def plot_trading_signals(data, actions, chart_placeholder):

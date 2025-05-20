@@ -21,14 +21,15 @@ def _inform_progress_callback(progress, params=None, mean_cv_score=None, best_pa
                 with st.session_state.rf_metrics.container():
                     st.write("**RF Agent Performance Metrics**")
                     if progress < 1.0:
-                        cols = st.columns(5)
+                        cols = st.columns(6)
                         cols[0].metric("RF Last N Estimators", params['n_estimators'])
                         cols[1].metric("RF Last Max Depth", params['max_depth'])
                         cols[2].metric("RF Last Min Sample Split", params['min_samples_split'])
                         cols[3].metric("RF Last Min Sample Leaf", params['min_samples_leaf'])
-                        cols[4].metric("RF Last Mean CV Score", f"{mean_cv_score:.4f}", delta=f"{(mean_cv_score - best_score):.4f}")
+                        cols[4].metric("RF Last Max Features", best_params['max_features'])
+                        cols[5].metric("RF Last Mean CV Score", f"{mean_cv_score:.4f}", delta=f"{(mean_cv_score - best_score):.4f}")
                     if pre_smote_label_distribution and post_smote_label_distribution:
-                        pre_dist = f"Hold={pre_smote_label_distribution.get(0, 0)}, Buy={pre_smote_label_distribution.get(1, 0)}, Sell={post_smote_label_distribution.get(2, 0)}"
+                        pre_dist = f"Hold={pre_smote_label_distribution.get(0, 0)}, Buy={pre_smote_label_distribution.get(1, 0)}, Sell={pre_smote_label_distribution.get(2, 0)}"
                         post_dist = f"Hold={post_smote_label_distribution.get(0, 0)}, Buy={post_smote_label_distribution.get(1, 0)}, Sell={post_smote_label_distribution.get(2, 0)}"
                         if pre_dist == post_dist:
                             st.write(f"**Label Distribution:** {pre_dist} -> SMOTE: Not applied!")
@@ -78,7 +79,7 @@ def _display_epoch_metrics(epoch_metrics_dict, placeholder, dqn_temperature):
         cols[2].metric("Cumulative Fees", f"€{epoch_metrics_dict['Cumulative Fees (€)']}")
         cols[3].metric("Best Sharpe Ratio", epoch_metrics_dict["Best Sharpe Ratio"], delta=f"{(float(epoch_metrics_dict['Best Sharpe Ratio']) - float(epoch_metrics_dict['Sharpe Ratio'])):.4f}")
         cols[4].metric("DQN Temperature", f"{dqn_temperature:.3f}")
-        cols[5].metric("Time Taken (s)", epoch_metrics_dict["Time Taken (s)"])
+        cols[5].metric("Epoch Fees", f"€{epoch_metrics_dict['Epoch Cumulative Fees (€)']}")
         st.divider()
 
 def _display_metrics(agent, portfolio_values, portfolio_chart_placeholder, ensemble_metrics_placeholder, epoch_metrics, metrics_table_placeholder, epoch_metrics_chart_placeholder):
@@ -149,7 +150,7 @@ def _handle_training(agent, settings, checkpoint_info, start_epoch, epoch_metric
                 )
             except Exception as e:
                 _handle_training_failed(agent, e, epoch, epoch_metrics, portfolio_values)
-                continue
+                raise e
             end_time = time.time()
             epoch_duration = end_time - start_time
 
@@ -294,12 +295,15 @@ def render_training(agent, settings):
     cols = st.columns([2, 3])
     with cols[0]:
         st.header("Model Training")
-        st.write(f"Training on {agent.ticker} between {agent.start_date} and {agent.end_date}")
     with cols[1]:
         if agent.has_pretrained_model():
             st.success(f"Loaded pre-trained ensemble model for {agent.ticker} with best Sharpe Ratio of {agent.best_sharpe:.4f}.")
             if not hasattr(agent.rf_agent.scaler, 'mean_'):
                 st.warning("RF Agent scaler is not fitted. Please start training to fit the model.")
         checkpoint_info, start_epoch, epoch_metrics, portfolio_values = _load_checkpoints(agent, settings)
+
+    if agent:
+        with st.expander(f"Agent's Training Dataset - {agent.ticker} ({agent.training_start_date} to {agent.training_end_date})"):
+            st.dataframe(agent.training_data)
 
     _build_ui_controls(agent, settings, checkpoint_info, start_epoch, epoch_metrics, portfolio_values)

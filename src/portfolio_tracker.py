@@ -28,52 +28,7 @@ class PortfolioTracker:
         # Initialize history with starting point
         self._add_history_point(None, None)
 
-    def _add_history_point(self, action, ticker_price, timestamp=None):
-        timestamp = timestamp if timestamp is not None else datetime.now()
-        total_value = self.cash + self.current_position_value
-        
-        self.history.append({
-            'timestamp': timestamp,
-            'cash': self.cash,
-            'position_value': self.current_position_value,
-            'total_value': total_value,
-            'realized_pnl': self.realized_pnl,
-            'unrealized_pnl': self.unrealized_pnl,
-            'ticker_price': ticker_price,
-            'total_fees': self.total_fees,
-            'action': action
-        })
-        Utils.log_message(f"DEBUG: Added history point: action={action}, ticker_price={ticker_price}, total_value={total_value:.2f}, timestamp={timestamp}, history_length={len(self.history)}")
 
-    def _add_bh_history_point(self, ticker, price, timestamp=None):
-        timestamp = timestamp if timestamp is not None else datetime.now()
-        total_value = self.bh_position_value
-        cash = self.initial_cash - self.bh_position_value if self.bh_holdings else self.initial_cash
-        
-        self.bh_history.append({
-            'timestamp': timestamp,
-            'cash': cash,
-            'position_value': self.bh_position_value,
-            'total_value': total_value,
-            'ticker': ticker,
-            'price': price
-        })
-        Utils.log_message(f"DEBUG: Added B&H history point: ticker={ticker}, price={price}, cash={cash:.2f}, position_value={self.bh_position_value:.2f}, total_value={total_value:.2f}, timestamp={timestamp}")
-
-    def save_history(self, model_dir, ticker):
-        try:
-            os.makedirs(model_dir, exist_ok=True)
-            history_path = os.path.join(model_dir, f"{ticker}_portfolio_history.pkl")
-            with open(history_path, "wb") as f:
-                pickle.dump(self.history, f)
-            bh_history_path = os.path.join(model_dir, f"{ticker}_bh_portfolio_history.pkl")
-            with open(bh_history_path, "wb") as f:
-                pickle.dump(self.bh_history, f)
-            Utils.log_message(f"INFO: Saved portfolio history to {history_path} and buy-and-hold history to {bh_history_path}")
-        except Exception as e:
-            Utils.log_message(f"ERROR: Failed to save portfolio history: {e}")
-            raise
-    
     def buy(self, ticker, quantity, price, fee_percentage=0.001, timestamp=None):
         cost = quantity * price
         cost = float(cost)  # Convert to Python float if needed
@@ -124,7 +79,7 @@ class PortfolioTracker:
         self._add_history_point('Buy', price, timestamp)
         
         return True, transaction_id
-    
+
     def sell(self, ticker, quantity, price, fee_percentage=0.001, timestamp=None):
         if ticker not in self.holdings or self.holdings[ticker]['quantity'] < quantity:
             return False, "Insufficient holdings"
@@ -171,7 +126,25 @@ class PortfolioTracker:
         self._add_history_point('Sell', price, timestamp)
         
         return True, transaction_id
-    
+
+
+    def _add_history_point(self, action, ticker_price, timestamp=None):
+        timestamp = timestamp if timestamp is not None else datetime.now()
+        total_value = self.cash + self.current_position_value
+        
+        self.history.append({
+            'timestamp': timestamp,
+            'cash': self.cash,
+            'position_value': self.current_position_value,
+            'total_value': total_value,
+            'realized_pnl': self.realized_pnl,
+            'unrealized_pnl': self.unrealized_pnl,
+            'ticker_price': ticker_price,
+            'total_fees': self.total_fees,
+            'action': action
+        })
+        Utils.log_message(f"DEBUG: Added history point: action={action}, ticker_price={ticker_price}, total_value={total_value:.2f}, timestamp={timestamp}, history_length={len(self.history)}")
+
     def update_position_values(self, ticker_prices, timestamp=None):
         """Update position values with current market prices"""
         total_position_value = 0
@@ -189,6 +162,20 @@ class PortfolioTracker:
         
         self.current_position_value = total_position_value
 
+    def save_history(self, model_dir, ticker):
+        try:
+            os.makedirs(model_dir, exist_ok=True)
+            history_path = os.path.join(model_dir, f"{ticker}_portfolio_history.pkl")
+            with open(history_path, "wb") as f:
+                pickle.dump(self.history, f)
+            bh_history_path = os.path.join(model_dir, f"{ticker}_bh_portfolio_history.pkl")
+            with open(bh_history_path, "wb") as f:
+                pickle.dump(self.bh_history, f)
+            Utils.log_message(f"INFO: Saved portfolio history to {history_path} and buy-and-hold history to {bh_history_path}")
+        except Exception as e:
+            Utils.log_message(f"ERROR: Failed to save portfolio history: {e}")
+            raise
+    
     def reset(self):
         """Reset the portfolio to its initial state."""
         self.cash = self.initial_cash
@@ -204,6 +191,7 @@ class PortfolioTracker:
         self.bh_position_value = 0
         self._add_history_point(None, None)
 
+
     def init_buy_and_hold(self, ticker, price, fee_percentage=0.001, timestamp=None):
         cost = self.initial_cash / (1 + fee_percentage)
         quantity = int(cost / price)
@@ -216,6 +204,21 @@ class PortfolioTracker:
         self._add_bh_history_point(ticker, price, timestamp)
         Utils.log_message(f"INFO: Initialized B&H portfolio: {quantity} shares of {ticker} at €{price:.2f}, fee: €{fee_amount:.2f}, position_value: €{self.bh_position_value:.2f}")
 
+    def _add_bh_history_point(self, ticker, price, timestamp=None):
+        timestamp = timestamp if timestamp is not None else datetime.now()
+        total_value = self.bh_position_value
+        cash = self.initial_cash - self.bh_position_value if self.bh_holdings else self.initial_cash
+        
+        self.bh_history.append({
+            'timestamp': timestamp,
+            'cash': cash,
+            'position_value': self.bh_position_value,
+            'total_value': total_value,
+            'ticker': ticker,
+            'price': price
+        })
+        Utils.log_message(f"DEBUG: Added B&H history point: ticker={ticker}, price={price}, cash={cash:.2f}, position_value={self.bh_position_value:.2f}, total_value={total_value:.2f}, timestamp={timestamp}")
+
     def update_bh_position_value(self, ticker, price, timestamp=None):
         updated = False
         for t, details in self.bh_holdings.items():
@@ -226,43 +229,3 @@ class PortfolioTracker:
                 self._add_bh_history_point(ticker, price, timestamp)
         if not updated:
             Utils.log_message(f"WARNING: Skipped B&H history update: ticker {ticker} not found in bh_holdings")
-
-    def evaluate_bh_performance(self, all_trades):
-        if all_trades:
-            values = np.array([h['total_value'] for h in self.bh_history if h['total_value'] is not None])
-        else:
-            values = np.array([h['total_value'] for h in [self.bh_history[0], self.bh_history[-1]] if h['total_value'] is not None])
-        if len(values) < 2:
-            Utils.log_message(f"WARNING: Insufficient B&H history for performance metrics")
-            return 0.0, 0.0, 0.0
-        returns = np.diff(values) / values[:-1]
-        sharpe_ratio = float(np.sqrt(252) * np.mean(returns) / (np.std(returns) + 1e-9))
-        drawdown = float(np.max(np.maximum.accumulate(values) - values))
-        total_return = float((values[-1] - values[0]) / values[0])
-        return sharpe_ratio, drawdown, total_return
-
-    def get_rolling_sharpe(self, portfolio_type='active', window=30):
-        """
-        Calculate the rolling Sharpe ratio for the specified portfolio.
-        
-        Args:
-            portfolio_type (str): 'active' for active portfolio, 'bh' for buy-and-hold.
-            window (int): Number of periods for rolling calculation.
-        
-        Returns:
-            float: Rolling Sharpe ratio, or 0.0 if insufficient data.
-        """
-        history = self.history if portfolio_type == 'active' else self.bh_history
-        if len(history) < window + 1:
-            Utils.log_message(f"WARNING: Insufficient history for rolling Sharpe (len={len(history)}, window={window})")
-            return 0.0
-        
-        values = np.array([h['total_value'] for h in history[-window-1:] if h['total_value'] is not None])
-        if len(values) < 2:
-            Utils.log_message(f"WARNING: Insufficient valid values for rolling Sharpe")
-            return 0.0
-        
-        returns = np.diff(values) / values[:-1]
-        sharpe_ratio = float(np.sqrt(252) * np.mean(returns) / (np.std(returns) + 1e-9))
-        Utils.log_message(f"DEBUG: Rolling Sharpe ({portfolio_type}, window={window}): {sharpe_ratio:.4f}")
-        return sharpe_ratio

@@ -17,11 +17,10 @@ from calculations import Calculations
 from utils import Utils, FEATURE_COLUMNS
 
 class RFAgent:
-    def __init__(self, ticker, start_date, end_date, model_dir, lookback, trade_fee,
-                 expected_feature_columns=FEATURE_COLUMNS):
+    def __init__(self, ticker, training_start_date, training_end_date, model_dir, lookback, trade_fee, use_smote, expected_feature_columns=FEATURE_COLUMNS):
         self.ticker = ticker
-        self.start_date = pd.Timestamp(start_date).date()
-        self.end_date = pd.Timestamp(end_date).date()
+        self.training_start_date = pd.Timestamp(training_start_date).date()
+        self.training_end_date = pd.Timestamp(training_end_date).date()
         self.lookback = lookback
         self.rf_model = None
         self.kmeans = None
@@ -33,6 +32,7 @@ class RFAgent:
         self.pre_smote_label_distribution = None
         self.post_smote_label_distribution = None
         self.trade_fee = trade_fee
+        self.use_smote = use_smote
         self.portfolio_value_history = []
         self.expected_feature_columns = expected_feature_columns
         
@@ -77,7 +77,8 @@ class RFAgent:
             hyperparams = {
                 'best_params': self.best_params,
                 'best_score': self.best_score,
-                'n_pca_components': self.n_pca_components
+                'n_pca_components': self.n_pca_components,
+                'use_smote': self.use_smote,
             }
             try:
                 os.makedirs(self.model_dir, exist_ok=True)
@@ -90,9 +91,12 @@ class RFAgent:
     def _save_settings(self):
         settings = {
             'ticker': self.ticker,
+            'training_start_date': pd.Timestamp(self.training_start_date).isoformat(),
+            'training_end_date': pd.Timestamp(self.training_end_date).isoformat(),
             'lookback': self.lookback,
             'trade_fee': self.trade_fee,
-            'n_pca_components': self.n_pca_components
+            'n_pca_components': self.n_pca_components,
+            'use_smote': self.use_smote,
         }
         try:
             os.makedirs(self.model_dir, exist_ok=True)
@@ -108,9 +112,12 @@ class RFAgent:
                 with open(self.settings_save_path, 'r') as f:
                     settings = json.load(f)
                 self.ticker = settings.get('ticker', self.ticker)
+                self.training_start_date = pd.Timestamp(settings['training_start_date']).date()
+                self.training_end_date = pd.Timestamp(settings['training_end_date']).date()
                 self.lookback = settings.get('lookback', self.lookback)
                 self.trade_fee = settings.get('trade_fee', self.trade_fee)
                 self.n_pca_components = settings.get('n_pca_components')
+                self.use_smote = settings.get('use_smote', self.use_smote)
                 Utils.log_message(f"INFO: Loaded RF settings from {self.settings_save_path}: {settings}")
                 return settings
             except Exception as e:
@@ -120,207 +127,71 @@ class RFAgent:
         return None
 
     def preprocess_data(self, data):
-        return Utils.preprocess_data(data)
+        return Utils.preprocess_data(data, volatility_period=self.atr_period, atr_smoothing=self.atr_smoothing) if not set(FEATURE_COLUMNS).issubset(data.columns) else data
+
+    def _create_labels(self, data):
+        returns = data['Returns'].shift(-1)
+        
+        # Use ATR and Returns to create a threshold in the scale of Returns
+        atr_scaled = data['ATR'] / data['ATR'].mean()  # Normalize ATR
+        threshold = data['Returns'].std() * atr_scaled.mean()  # Scale by Returns volatility
+        threshold *= 0.5  # Adjust to ensure reasonable number of Buy/Sell labels
+        
+        labels = np.zeros(len(returns))
+        labels[returns > threshold] = 1  # Buy
+        labels[returns < -threshold] = 2  # Sell
+        
+        # Handle NaNs and slice
+        valid_mask = ~np.isnan(returns) & ~np.isnan(data['ATR'])
+        labels = labels[valid_mask]
+        labels = labels[self.lookback:len(data)]
+        
+        # Log statistics for debugging
+        Utils.log_message(f"DEBUG: Returns mean={returns.mean():.6f}, std={returns.std():.6f}, min={returns.min():.6f}, max={returns.max():.6f}")
+        Utils.log_message(f"DEBUG: ATR mean={data['ATR'].mean():.6f}, std={data['ATR'].std():.6f}")
+        Utils.log_message(f"DEBUG: Threshold={threshold:.6f}")
+        unique, counts = np.unique(labels, return_counts=True)
+        Utils.log_message(f"INFO: Initial label distribution: {dict(zip(unique, counts))}")
+        
+        # Fallback: Use quantile-based labeling if insufficient diversity
+        unique_labels = np.unique(labels)
+        if len(unique_labels) < 2:
+            Utils.log_message(f"WARNING: Insufficient label diversity with threshold {threshold:.6f}. Falling back to quantile-based labeling.")
+            valid_returns = returns[valid_mask][self.lookback:len(data)]
+            if len(valid_returns) > 0:
+                buy_threshold = valid_returns.quantile(0.75)
+                sell_threshold = valid_returns.quantile(0.25)
+                labels = np.zeros(len(valid_returns))
+                labels[valid_returns > buy_threshold] = 1  # Buy
+                labels[valid_returns < sell_threshold] = 2  # Sell
+                unique, counts = np.unique(labels, return_counts=True)
+                Utils.log_message(f"DEBUG: Quantile thresholds: Buy={buy_threshold:.6f}, Sell={sell_threshold:.6f}")
+                Utils.log_message(f"INFO: Fallback label distribution: {dict(zip(unique, counts))}")
+            
+            # Final diversity check
+            unique_labels = np.unique(labels)
+            if len(unique_labels) < 2:
+                Utils.log_message(f"ERROR: Still insufficient label diversity after fallback: {unique_labels}")
+                raise ValueError(f"Insufficient label diversity: {unique_labels}")
+        
+        return labels
 
     def _prepare_features(self, data, apply_pca=True):
         features = []
         feature_columns = self.expected_feature_columns
+        valid_indices = []
         for i in range(self.lookback, len(data)):
             window = data.iloc[i - self.lookback:i][feature_columns]
+            if window.isna().any().any():
+                continue  # Skip windows with NaN values
             feature = window.values.flatten()
             features.append(feature)
+            valid_indices.append(i)
         features = np.array(features)
-        
+        Utils.log_message(f"INFO: Prepared {len(features)} features from {len(data)} rows")
         if apply_pca and self.pca is not None:
             features = self.pca.transform(features)
-
-        return features
-
-    def _create_labels(self, data):
-        returns = data['Close'].pct_change().shift(-1)
-        atr = data['ATR'] / data['Close']  # Normalizing ATR
-        threshold = atr.mean()
-        labels = np.zeros(len(returns))
-        labels[returns > threshold] = 1
-        labels[returns < -threshold] = 2
-        return labels[self.lookback:len(data)]
-
-    def train(self, data, use_smote=False, progress_callback=None, force_grid_search=False):
-        Utils.log_message(f"INFO: Training RF Agent for {self.ticker}")
-        processed_data = self.preprocess_data(data)
-        if processed_data.empty:
-            Utils.log_message(f"ERROR: No valid preprocessed data for RF training")
-            return
-        
-        # Prepare features and labels
-        features = self._prepare_features(processed_data, apply_pca=False)
-        labels = self._create_labels(processed_data)
-        
-        tscv = TimeSeriesSplit(n_splits=5)
-        for fold, (train_idx, val_idx) in enumerate(tscv.split(features)):
-            X_train, X_val = features[train_idx], features[val_idx]
-            y_train, y_val = labels[train_idx], labels[val_idx]
-            self.scaler.fit(X_train)
-            X_train_scaled = self.scaler.transform(X_train)
-            X_val_scaled = self.scaler.transform(X_val)
-        
-        Utils.log_message(f"DEBUG: Features shape: {features.shape}, Labels shape: {labels.shape}")
-        if len(features) == 0 or len(labels) == 0:
-            Utils.log_message(f"ERROR: No valid features or labels for RF training")
-            return
-        
-        if len(features) != len(labels):
-            Utils.log_message(f"ERROR: Feature-label mismatch: {len(features)} features, {len(labels)} labels")
-            raise ValueError(f"Feature-label mismatch: {len(features)} features, {len(labels)} labels")
-        
-        # Split data into training and validation sets (70-30 split)
-        X_train, X_val, y_train, y_val = train_test_split(features, labels, test_size=0.3, random_state=42, stratify=labels)
-        Utils.log_message(f"INFO: Train set: {X_train.shape[0]} samples, Validation set: {X_val.shape[0]} samples")
-        
-        # Scale features
-        self.scaler.fit(X_train)
-        X_train_scaled = self.scaler.transform(X_train)
-        X_val_scaled = self.scaler.transform(X_val)
-
-        if use_smote:
-            try:
-                self.post_smote_label_distribution = Calculations.perform_smote(X_train_scaled, y_train, self.pre_smote_label_distribution)
-                Utils.log_message(f"INFO: Post-SMOTE label distribution: Hold={self.post_smote_label_distribution.get(0, 0)}, Buy={self.post_smote_label_distribution.get(1, 0)}, Sell={self.post_smote_label_distribution.get(2, 0)}")
-            except ValueError as e:
-                Utils.log_message(f"WARNING: SMOTE failed: {e}. Proceeding with original training data.")
-                self.post_smote_label_distribution = self.pre_smote_label_distribution
-        else:
-            # Skip SMOTE
-            Utils.log_message(f"INFO: SMOTE skipped to match validation set's class distribution")
-            self.post_smote_label_distribution = self.pre_smote_label_distribution
-
-        # Apply PCA
-        pca_results = Calculations.apply_pca(X_train_scaled, X_val_scaled)
-        self.pca = pca_results['pca']
-        X_train_scaled = pca_results['X_train']
-        X_val_scaled = pca_results['X_val']
-        self.n_pca_components = pca_results['n_pca_components']
-        Utils.log_message(f"INFO: Applied PCA: {self.n_pca_components} components retained, explained variance ratio: {sum(self.pca.explained_variance_ratio_):.4f}")
-
-        # Train KMeans on PCA-transformed training data
-        best_score, best_n = -1, 3
-        for n in range(2, 6):
-            kmeans = KMeans(n_clusters=n, random_state=42)
-            labels = kmeans.fit_predict(X_train_scaled)
-            score = silhouette_score(X_train_scaled, labels)
-            if score > best_score:
-                best_score, best_n = score, n
-        self.kmeans = KMeans(n_clusters=best_n, random_state=42)
-        self.kmeans.fit(X_train_scaled)
-        self.kmeans = KMeans(n_clusters=3, random_state=42)
-        self.kmeans.fit(X_train_scaled)
-        
-        if self.best_params is not None and not force_grid_search:
-            Utils.log_message(f"INFO: Using pre-loaded hyperparameters: {self.best_params}")
-            self.rf_model = RandomForestClassifier(**self.best_params, random_state=42, class_weight='balanced')
-            self.rf_model.fit(X_train_scaled, y_train)
-            train_score = self.rf_model.score(X_train_scaled, y_train)
-            val_score = self.rf_model.score(X_val_scaled, y_val)
-            if val_score > self.best_score:
-                self.best_score = val_score
-                self.save_model()
-                self._save_hyperparameters()
-                Utils.log_message(f"INFO: New best RF model saved: Train Score={train_score:.4f}, Validation Score={val_score:.4f}, Params={self.best_params}")
-                # Log feature importances (PCA components)
-                importances = self.rf_model.feature_importances_
-                Utils.log_message(f"INFO: PCA component importances: " + ", ".join(f"PC{i+1}: {imp:.4f}" for i, imp in enumerate(importances)))
-            else:
-                Utils.log_message(f"INFO: Pre-loaded hyperparameters did not improve best score: {self.best_score:.4f}")
-            if progress_callback:
-                progress_callback(
-                    1.0,
-                    params=self.best_params,
-                    mean_cv_score=train_score,
-                    best_params=self.best_params,
-                    best_score=self.best_score,
-                    training_phase="rf",
-                    override_status_message=f"RF Training completed with loaded hyperparameters: Train Score={train_score:.4f}, Val Score={val_score:.4f}, Best Score={self.best_score:.4f}, Params={self.best_params}",
-                    pre_smote_label_distribution=self.pre_smote_label_distribution,
-                    post_smote_label_distribution=self.post_smote_label_distribution
-                )
-        else:
-            param_grid = {
-                'n_estimators': [50, 100, 200],
-                'max_depth': [None, 3, 5, 7, 10],
-                'min_samples_split': [5, 10, 15],
-                'min_samples_leaf': [5, 10, 15],
-                'max_features': ['sqrt', 'log2']
-            }
-            
-            param_combinations = list(product(*param_grid.values()))
-            total_combinations = len(param_combinations)
-            
-            # Log validation set details
-            Utils.log_message(f"INFO: Validation set size: {X_val_scaled.shape[0]}")
-            unique_val, counts_val = np.unique(y_val, return_counts=True)
-            Utils.log_message(f"INFO: Validation set label distribution: {dict(zip(unique_val, counts_val))}")
-            
-            for i, params in enumerate(param_combinations):
-                params_dict = dict(zip(param_grid.keys(), params))
-                rf = RandomForestClassifier(**params_dict, random_state=42, class_weight='balanced')
-                scores = cross_val_score(rf, X_train_scaled, y_train, cv=5, scoring='accuracy', n_jobs=-1)
-                mean_test_score = np.mean(scores)
-                
-                # Fit the model to evaluate on validation set
-                rf.fit(X_train_scaled, y_train)
-                val_score = rf.score(X_val_scaled, y_val)
-                
-                # Log score comparison
-                score_gap = mean_test_score - val_score
-                Utils.log_message(f"INFO: Score comparison: CV Score={mean_test_score:.4f}, Validation Score={val_score:.4f}, Difference={score_gap:.4f}")
-                
-                # Save model if score gap is reasonable
-                if val_score > self.best_score and score_gap < 0.1:  # Relaxed threshold
-                    self.best_params = params_dict
-                    self.best_score = val_score
-                    self.rf_model = rf
-                    self.save_model()
-                    self._save_hyperparameters()
-                    Utils.log_message(f"INFO: New best RF model saved: CV Score={mean_test_score:.4f}, Validation Score={val_score:.4f}, Params={params_dict}")
-                    # Log feature importances (PCA components)
-                    importances = self.rf_model.feature_importances_
-                    Utils.log_message(f"INFO: PCA component importances: " + ", ".join(f"PC{i+1}: {imp:.4f}" for i, imp in enumerate(importances)))
-                elif score_gap >= 0.1:
-                    Utils.log_message(f"WARNING: Model skipped due to large score gap indicating overfitting: CV Score={mean_test_score:.4f}, Val Score={val_score:.4f}, Gap={score_gap:.4f}")
-                
-                progress = (i + 1) / total_combinations
-                Utils.log_message(f"INFO: RF Grid Search: Progress {progress*100:.1f}%, Params: {params_dict}, CV Score: {mean_test_score:.4f}, Validation Score: {val_score:.4f}, Best Validation Score: {self.best_score:.4f}")
-                if progress_callback:
-                    progress_callback(
-                        progress,
-                        params=params_dict,
-                        mean_cv_score=mean_test_score,
-                        best_params=self.best_params,
-                        best_score=self.best_score,
-                        training_phase="rf",
-                        pre_smote_label_distribution=self.pre_smote_label_distribution,
-                        post_smote_label_distribution=self.post_smote_label_distribution
-                    )
-            
-            if self.best_params is not None:
-                self._save_hyperparameters()
-                if self.rf_model:
-                    importances = self.rf_model.feature_importances_
-                    Utils.log_message(f"INFO: Final model PCA component importances: {", ".join(f"PC{i+1}: {imp:.4f}" for i, imp in enumerate(importances))}")
-            if progress_callback:
-                progress_callback(
-                    1.0,
-                    params=self.best_params,
-                    mean_cv_score=self.best_score,
-                    best_params=self.best_params,
-                    best_score=self.best_score,
-                    training_phase="rf",
-                    #override_status_message=f"RF Training completed: Best Validation Score={self.best_score:.4f}, Best Params={self.best_params}",
-                    pre_smote_label_distribution=self.pre_smote_label_distribution,
-                    post_smote_label_distribution=self.post_smote_label_distribution
-                )
-        
-        Utils.log_message(f"INFO: RF training completed: Best Validation Score={self.best_score:.4f}, Best Params={self.best_params}")
+        return features, valid_indices
 
     def predict(self, state):
         if self.rf_model is None or self.kmeans is None or self.pca is None:
@@ -332,18 +203,23 @@ class RFAgent:
             state = state.reshape(1, -1)
         elif state.shape != (1, expected_features):
             Utils.log_message(f"ERROR: Unexpected state shape: {state.shape}, expected (1, {expected_features})")
-            return 0, [0.33, 0.33, 0.33]
+            # return 0, [0.33, 0.33, 0.33]
+            raise ValueError(f"ERROR: Unexpected state shape: {state.shape}, expected (1, {expected_features})")
         
         state_scaled = self.scaler.transform(state)
         state_pca = self.pca.transform(state_scaled)
         cluster = self.kmeans.predict(state_pca)[0]
         
         proba = self.rf_model.predict_proba(state_pca)[0]
-        proba[1] *= (1 - self.trade_fee)
-        proba[2] *= (1 - self.trade_fee)
-        action = int(np.argmax(proba))
+        full_proba = np.array([0.33, 0.33, 0.33])
+        n_classes = len(self.rf_model.classes_)
+        for i, class_idx in enumerate(self.rf_model.classes_):
+            full_proba[int(class_idx)] = proba[i]
+        full_proba[1] *= (1 - self.trade_fee)
+        full_proba[2] *= (1 - self.trade_fee)
+        action = int(np.argmax(full_proba))
 
-        return action, proba
+        return action, full_proba
 
     def evaluate_performance(self, data=None):
         if data is None:
@@ -482,3 +358,156 @@ class RFAgent:
         if os.path.exists(checkpoint_dir) and not os.listdir(checkpoint_dir):
             os.rmdir(checkpoint_dir)
             Utils.log_message(f"INFO: Removed empty checkpoints directory")
+
+
+    def train(self, data, progress_callback=None, force_grid_search=False):
+        Utils.log_message(f"INFO: Training RF Agent for {self.ticker}")
+
+        features, labels = self._prepare_training_data(data)
+        if features is None:
+            return
+
+        features_scaled = self.scaler.fit_transform(features)
+        features_scaled, labels = self._handle_smote(features_scaled, labels)
+
+        features_pca = self._scale_and_pca(features_scaled)
+        self._train_kmeans(features_pca)
+
+        X_train, X_val, y_train, y_val = self._split_time_series(features_pca, labels)
+
+        if not hasattr(self, 'best_score'):
+            self.best_score = 0
+
+        if self.best_params and not force_grid_search:
+            val_score = self._train_and_evaluate_model(self.best_params, X_train, y_train, X_val, y_val)
+            self._finalize_model(val_score, self.best_params, X_val)
+            if progress_callback:
+                self._emit_final_progress(progress_callback, val_score)
+        else:
+            self._grid_search_rf(features_pca, labels, X_train, y_train, X_val, y_val, progress_callback)
+
+    def _prepare_training_data(self, data):
+        processed = self.preprocess_data(data)
+        if processed.empty:
+            Utils.log_message("ERROR: No valid preprocessed data")
+            return None, None
+
+        features, valid_idx = self._prepare_features(processed, apply_pca=False)
+        labels = self._create_labels(processed)
+
+        if len(valid_idx) != len(labels):
+            labels = labels[:len(valid_idx)]
+            features = features[:len(labels)]
+            Utils.log_message(f"INFO: Aligned to {len(features)} samples")
+
+        if len(features) < 50:
+            Utils.log_message("ERROR: Insufficient data")
+            return None, None
+
+        if len(np.unique(labels)) < 2:
+            raise ValueError("Insufficient label diversity")
+
+        self.pre_smote_label_distribution = dict(zip(*np.unique(labels, return_counts=True)))
+        return features, labels
+
+    def _handle_smote(self, features, labels):
+        if self.use_smote:
+            try:
+                features, labels, dist = Calculations.perform_smote(features, labels)
+                self.post_smote_label_distribution = dist
+                Utils.log_message(f"INFO: Post-SMOTE label distribution: {dist}")
+            except ValueError as e:
+                Utils.log_message(f"WARNING: SMOTE failed: {e}")
+                self.post_smote_label_distribution = self.pre_smote_label_distribution
+        else:
+            self.post_smote_label_distribution = self.pre_smote_label_distribution
+        return features, labels
+
+    def _scale_and_pca(self, features):
+        pca_result = Calculations.apply_pca(features, features)
+        self.pca = pca_result['pca']
+        self.n_pca_components = pca_result['n_pca_components']
+        Utils.log_message(f"INFO: Applied PCA: {self.n_pca_components} components, variance: {sum(self.pca.explained_variance_ratio_):.4f}")
+        return pca_result['X_train']
+
+    def _train_kmeans(self, features):
+        best_score, best_n = -1, 3
+        for n in range(2, 6):
+            kmeans = KMeans(n_clusters=n, random_state=42)
+            score = silhouette_score(features, kmeans.fit_predict(features))
+            if score > best_score:
+                best_score, best_n = score, n
+        self.kmeans = KMeans(n_clusters=best_n, random_state=42)
+        self.kmeans.fit(features)
+        Utils.log_message(f"INFO: KMeans trained with {best_n} clusters, silhouette score: {best_score:.4f}")
+
+    def _split_time_series(self, features, labels):
+        val_size = len(features) // 3
+        return features[:-val_size], features[-val_size:], labels[:-val_size], labels[-val_size:]
+
+    def _train_and_evaluate_model(self, params, X_train, y_train, X_val, y_val):
+        model = RandomForestClassifier(**params, random_state=42, class_weight='balanced')
+        model.fit(X_train, y_train)
+        self.rf_model = model
+        return model.score(X_val, y_val)
+
+    def _finalize_model(self, val_score, params, X_val):
+        if val_score > self.best_score:
+            self.best_score = val_score
+            self.best_params = params
+            self.save_model()
+            self._save_hyperparameters()
+            importances = self.rf_model.feature_importances_
+            Utils.log_message(f"INFO: New best RF model: Score={val_score:.4f}, Params={params}")
+            Utils.log_message(f"INFO: PCA importances: " + ", ".join(f"PC{i+1}: {imp:.4f}" for i, imp in enumerate(importances)))
+
+    def _emit_final_progress(self, callback, val_score):
+        callback(
+            1.0,
+            params=self.best_params,
+            mean_cv_score=val_score,
+            best_params=self.best_params,
+            best_score=self.best_score,
+            training_phase="rf",
+            override_status_message=f"RF Training completed: Validation Score={val_score:.4f}, Params={self.best_params}",
+            pre_smote_label_distribution=self.pre_smote_label_distribution,
+            post_smote_label_distribution=self.post_smote_label_distribution
+        )
+
+    def _grid_search_rf(self, features, labels, X_train, y_train, X_val, y_val, callback):
+        from itertools import product
+        tscv = TimeSeriesSplit(n_splits=2)
+        param_grid = {
+            'n_estimators': [50, 100, 150, 200, 250, 300],
+            'max_depth': [None, 3, 5, 7, 10],
+            'min_samples_split': [5, 10, 15],
+            'min_samples_leaf': [5, 10, 15],
+            'max_features': ['sqrt', 'log2', None]
+        }
+        param_combinations = list(product(*param_grid.values()))
+
+        for i, combo in enumerate(param_combinations):
+            params = dict(zip(param_grid.keys(), combo))
+            model = RandomForestClassifier(**params, random_state=42, class_weight='balanced')
+            cv_score = np.mean(cross_val_score(model, features, labels, cv=tscv, scoring='accuracy', n_jobs=-1))
+            model.fit(X_train, y_train)
+            val_score = model.score(X_val, y_val)
+
+            score_gap = cv_score - val_score
+            if val_score > self.best_score and score_gap < 0.15:
+                self.rf_model = model
+                self._finalize_model(val_score, params, X_val)
+
+            progress = (i + 1) / len(param_combinations)
+            Utils.log_message(f"INFO: Grid Search {progress*100:.1f}% - Params: {params}, CV: {cv_score:.4f}, Val: {val_score:.4f}, Best: {self.best_score:.4f}")
+            if callback:
+                callback(
+                    progress,
+                    params=params,
+                    mean_cv_score=cv_score,
+                    best_params=self.best_params,
+                    best_score=self.best_score,
+                    training_phase="rf",
+                    pre_smote_label_distribution=self.pre_smote_label_distribution,
+                    post_smote_label_distribution=self.post_smote_label_distribution
+                )

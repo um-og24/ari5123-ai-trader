@@ -31,8 +31,8 @@ def _execute_trade(agent, settings, action, current_price, timestamp, q_values, 
         if action == 1:
             # Use ATR for dynamic volatility-based position sizing
             atr = 0.02 * current_price  # Default ATR
-            if 'ATR' in agent.data.columns and st.session_state.current_index < len(agent.data):
-                atr_value = agent.data['ATR'].iloc[st.session_state.current_index]
+            if 'ATR' in agent.trading_data.columns and st.session_state.current_index < len(agent.trading_data):
+                atr_value = agent.trading_data['ATR'].iloc[st.session_state.current_index]
                 atr = float(atr_value) if pd.notna(atr_value) else atr
             
             atr_multiplier = 1.5  # Adjustable multiplier
@@ -103,9 +103,11 @@ def _execute_trade(agent, settings, action, current_price, timestamp, q_values, 
 
 def render_live_trading(agent, settings):
     cols = st.columns([2, 3])
+    st.divider()
+    date_cols=st.columns(2)
+
     with cols[0]:
         st.header("Live Trading")
-        st.write(f"Trading on {agent.ticker} between {agent.start_date} and {agent.end_date}")
     with cols[1]:
         if agent.has_pretrained_model():
             st.success(f"Loaded pre-trained ensemble model for {agent.ticker} with best Sharpe Ratio of {agent.best_sharpe:.4f}.")
@@ -116,6 +118,15 @@ def render_live_trading(agent, settings):
         else:
             st.warning("No pre-trained ensemble model found. Please train the model before live trading.")
             return  # Prevent simulation until model is trained
+
+    st.session_state.trading_start_date = date_cols[0].date_input("Start Date", value=st.session_state.trading_start_date, key="trading_start_date_pick")
+    st.session_state.trading_end_date = date_cols[1].date_input("End Date", value=st.session_state.trading_end_date, key="trading_end_date_pick")
+
+    agent.trading_data = agent.get_data(st.session_state.trading_start_date, st.session_state.trading_end_date)
+
+    if agent and agent.has_pretrained_model():
+        with st.expander(f"Agent's Trading Dataset - {agent.ticker} ({st.session_state.trading_start_date} to {st.session_state.trading_end_date})"):
+            st.dataframe(agent.trading_data)
 
     with cols[1]:
         checkpoint_info = agent.load_checkpoint(settings)
@@ -145,14 +156,13 @@ def render_live_trading(agent, settings):
     total_value = Calculations.to_scalar(portfolio.cash) + Calculations.to_scalar(portfolio.current_position_value)
     total_value_diff=total_value-Calculations.to_scalar(agent.initial_cash)
     metric_cols = st.columns(4)
-    #metric_cols[0].metric("Portfolio Value", f"€{float(total_value):.2f}", delta=f"{'-€' if pnl < 0.0 else '€'}{abs(float(pnl)):.2f}")
     metric_cols[0].metric("Portfolio Value", f"€{float(total_value):.2f}", delta=f"{'-€' if total_value_diff < 0.0 else '€'}{abs(float(total_value_diff)):.2f}")
     metric_cols[1].metric("Cash", f"€{Calculations.to_scalar(portfolio.cash):.2f}")
     metric_cols[2].metric("Positions", f"€{Calculations.to_scalar(portfolio.current_position_value):.2f}")
-    if agent and agent.data is not None and not agent.data.empty and len(agent.data) > 0 and st.session_state.current_index > 0:
-        i = min(st.session_state.current_index, len(agent.data) - 1)
-        current_price = float(agent.data['Close'].iloc[i])
-        prev_price = float(agent.data['Close'].iloc[i-1]) if i > 0 else current_price
+    if agent and agent.trading_data is not None and not agent.trading_data.empty and len(agent.trading_data) > 0 and st.session_state.current_index > 0:
+        i = min(st.session_state.current_index, len(agent.trading_data) - 1)
+        current_price = float(agent.trading_data['Close'].iloc[i])
+        prev_price = float(agent.trading_data['Close'].iloc[i-1]) if i > 0 else current_price
         price_change = ((current_price - prev_price) / prev_price * 100) if prev_price != 0 else 0
         metric_cols[3].metric(f"{settings['ticker']} Price", f"€{current_price:.2f}", delta=f"{price_change:.2f}%", delta_color="inverse")
 
@@ -175,13 +185,13 @@ def render_live_trading(agent, settings):
         st.session_state.simulation_paused = False
         st.session_state.current_index = settings['lookback']
         st.session_state.trade_log = []
-        st.session_state.actions = np.zeros(len(agent.data), dtype=int)
+        st.session_state.actions = np.zeros(len(agent.trading_data), dtype=int)
         st.session_state.recent_actions = []
         portfolio.reset()
         # Initialize B&H portfolio
-        if len(agent.data) > settings['lookback']:
-            initial_price = float(agent.data['Close'].iloc[settings['lookback']])
-            timestamp = agent.data.index[settings['lookback']]
+        if len(agent.trading_data) > settings['lookback']:
+            initial_price = float(agent.trading_data['Close'].iloc[settings['lookback']])
+            timestamp = agent.trading_data.index[settings['lookback']]
             portfolio.init_buy_and_hold(settings['ticker'], initial_price, fee_percentage=settings['trade_fee'], timestamp=timestamp)
             Utils.log_message(f"INFO: Initialized B&H portfolio for {settings['ticker']} at price €{initial_price:.2f}")
         else:
@@ -204,19 +214,20 @@ def render_live_trading(agent, settings):
         Utils.log_message(f"INFO: Live trading stopped and agent cleared")
         st.rerun()
 
-    with placeholder_timestamp.container():
-        st.write("**Current Date**")
-        st.warning(agent.data.index[st.session_state.current_index].strftime("%A, %d %b %Y"))  # .strftime("%A, %d %b %Y %X") Includes timestamp
+    if agent and not agent.trading_data.empty:
+        with placeholder_timestamp.container():
+            st.write("**Current Date**")
+            st.warning(agent.trading_data.index[st.session_state.current_index if st.session_state.current_index < len(agent.trading_data) else len(agent.trading_data) - 1].strftime("%A, %d %b %Y"))  # .strftime("%A, %d %b %Y %X") Includes timestamp
 
     if st.session_state.simulation_running and not st.session_state.simulation_paused:
         with placeholder_timer.container():
             prediciton_wait_text="Making a prediction, please wait..."
             st.info(f"⌛ {prediciton_wait_text}")
             st.toast(prediciton_wait_text, icon="⌛")
-        norm_data = agent.preprocess_data()
-        if st.session_state.current_index < len(agent.data) - 1 and st.session_state.current_index - settings['lookback'] < len(norm_data):
+        norm_data = agent.dqn_agent.preprocess_data(agent.trading_data)
+        if st.session_state.current_index < len(agent.trading_data) - 1 and st.session_state.current_index - settings['lookback'] < len(norm_data):
             i = st.session_state.current_index
-            timestamp = agent.data.index[i]
+            timestamp = agent.trading_data.index[i]
             with placeholder_timestamp.container():
                 st.write("**Current Date**")
                 st.info(timestamp.strftime("%A, %d %b %Y"))  # .strftime("%A, %d %b %Y %X") Includes timestamp
@@ -235,10 +246,11 @@ def render_live_trading(agent, settings):
             else:
                 st.session_state.recent_actions.append(int(action))
             st.session_state.actions[i] = int(action)
-            sliced_data = agent.data.iloc[:i + 1]
-            ChartBuilder.plot_trading_signals(sliced_data, st.session_state.actions[:i + 1], placeholder_chart.container())
+            sliced_data = agent.trading_data.iloc[:i + 1]
+            ChartBuilder.plot_transaction_history(sliced_data, portfolio, "trading_1", placeholder_chart.container())
+            # ChartBuilder.plot_trading_signals(sliced_data, st.session_state.actions[:i + 1], placeholder_chart.container())
             Utils.display_action(action, q_values, placeholder_action)
-            current_price = agent.data['Close'].iloc[i]
+            current_price = agent.trading_data['Close'].iloc[i]
             portfolio = st.session_state.portfolio_tracker
             portfolio.update_bh_position_value(settings['ticker'], current_price, timestamp)
             transaction_message, transaction_icon = _execute_trade(agent, settings, action, current_price, timestamp, q_values, dqn_action, rf_action)
@@ -256,24 +268,31 @@ def render_live_trading(agent, settings):
             Utils.display_timer_until_rerun(settings['trading_simulation_delay'], "Next trade signal in ", placeholder_timer)
         else:
             i=st.session_state.current_index
-            ticker_prices = {settings['ticker']: agent.data['Close'].iloc[i]}
-            portfolio.update_position_values(ticker_prices, agent.data.index[i-1])
+            ticker_prices = {settings['ticker']: agent.trading_data['Close'].iloc[i]}
+            portfolio.update_position_values(ticker_prices, agent.trading_data.index[i-1])
             st.session_state.simulation_running = False
             st.session_state.recent_actions = []
-            ChartBuilder.plot_trading_signals(agent.data.iloc[:i + 1], st.session_state.actions[:i + 1], placeholder_chart.container())
+            ChartBuilder.plot_transaction_history(agent.trading_data.iloc[:i + 1], portfolio, "trading_2", placeholder_chart.container())
+            # ChartBuilder.plot_trading_signals(agent.trading_data.iloc[:i + 1], st.session_state.actions[:i + 1], placeholder_chart.container())
             placeholder_info.success("Trading simulation completed!")
+            placeholder_timer.write("")
     elif st.session_state.simulation_running and st.session_state.simulation_paused:
         if st.session_state.actions is not None:
             i = st.session_state.current_index - 1
-            ChartBuilder.plot_trading_signals(agent.data.iloc[:i + 1], st.session_state.actions[:i + 1], placeholder_chart.container())
+            ChartBuilder.plot_transaction_history(agent.trading_data.iloc[:i + 1], portfolio, "trading_3", placeholder_chart.container())
+            # ChartBuilder.plot_trading_signals(agent.trading_data.iloc[:i + 1], st.session_state.actions[:i + 1], placeholder_chart.container())
             placeholder_info.info("Trading paused. Click 'Resume Trading' to continue.")
+            placeholder_timer.write("")
     elif not st.session_state.simulation_running and st.session_state.actions is not None:
+        placeholder_timer.write("")
         i = st.session_state.current_index - 1 if st.session_state.current_index > 0 else 0
         if i >= settings['lookback']:
-            ChartBuilder.plot_trading_signals(agent.data.iloc[:i + 1], st.session_state.actions[:i + 1], placeholder_chart.container())
+            ChartBuilder.plot_transaction_history(agent.trading_data.iloc[:i + 1], portfolio, "trading_4", placeholder_chart.container())
+            # ChartBuilder.plot_trading_signals(agent.trading_data.iloc[:i + 1], st.session_state.actions[:i + 1], placeholder_chart.container())
         else:
             with placeholder_chart.container():
                 placeholder_info.info("Start trading to see signals")
     else:
+        placeholder_timer.write("")
         with placeholder_chart.container():
             st.info("Start trading to see signals")

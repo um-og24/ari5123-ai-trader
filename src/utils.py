@@ -25,13 +25,14 @@ def _init_logger():
 
 logger = _init_logger()
 
-FEATURE_COLUMNS=['Open', 'High', 'Low', 'Close', 'Volume', 'RSI', 'SMA20', 'MACD', 'BB_Upper', 'BB_Lower', 'BB',
-                 'BB_Penetration', 'ATR', 'Returns', 'Volatility', 'RSI_Slope', 'Price_Slope', 'RSI_Divergence',
-                 'Lag1_Return', 'Lag3_Return', 'Lag5_Return', 'Skewness', 'Kurtosis']
+REQUIRED_DATA_COLUMNS=['Open', 'High', 'Low', 'Close', 'Volume']
+FEATURE_COLUMNS=REQUIRED_DATA_COLUMNS + ['RSI', 'SMA20', 'MACD', 'BB_Upper', 'BB_Lower', 'BB', 'BB_Penetration',
+                'ATR', 'Returns', 'Volatility', 'RSI_Slope', 'Price_Slope', 'RSI_Divergence',
+                'Lag1_Return', 'Lag3_Return', 'Lag5_Return', 'Skewness', 'Kurtosis']
 
-SETTING_KEYS=['ticker', 'start_date', 'end_date', 'model_dir', 'capital_type', 'initial_cash', 'reference_capital', 'capital_percentage',
+SETTING_KEYS=['ticker', 'training_start_date', 'training_end_date', 'model_dir', 'capital_type', 'initial_cash', 'reference_capital', 'capital_percentage',
             'trade_fee', 'lookback', 'risk_per_trade', 'epochs', 'max_trades_per_epoch', 'max_fee_per_epoch', 'confirmation_steps',
-            'dqn_weight_scale', 'atr_multiplier', 'atr_period', 'atr_smoothing', 'expected_feature_columns']
+            'dqn_weight_scale', 'atr_multiplier', 'atr_period', 'atr_smoothing', 'use_smote']
 
 LOG_LEVEL_METHODS = {
     "ERROR: ": logger.error,
@@ -54,7 +55,7 @@ class Utils:
     """Centralized class for utility functions."""
     
     @staticmethod
-    def preprocess_data(df, required_columns=FEATURE_COLUMNS[:5], rsi_period=14, macd_params=(12, 26, 9), bb_window=20, volatility_period=14, atr_smoothing=True, rsi_divergence_params={'diff_period': 3, 'smooth_period': 5, 'rsi_threshold': -0.1}):
+    def preprocess_data(df, required_columns=REQUIRED_DATA_COLUMNS, rsi_period=14, macd_params=(12, 26, 9), bb_window=20, volatility_period=14, atr_smoothing=True, rsi_divergence_params={'diff_period': 3, 'smooth_period': 5, 'rsi_threshold': -0.1}):
         """
         Preprocess financial data by adding technical indicators and volatility features.
 
@@ -64,7 +65,7 @@ class Utils:
 
         Args:
             df (pd.DataFrame): Input DataFrame with required columns.
-            required_columns (list[str]): List of required columns (default: first 5 of FEATURE_COLUMNS).
+            required_columns (list[str]): List of required columns (default: REQUIRED_DATA_COLUMNS).
             rsi_period (int): Period for RSI calculation (default: 14).
             macd_params (tuple): Tuple of (short_ema, long_ema, signal_ema) periods for MACD (default: (12, 26, 9)).
             bb_window (int): Window for Bollinger Bands and SMA calculations (default: 20).
@@ -142,7 +143,7 @@ class Utils:
                 df = df.sort_index()
 
             data = df[required_columns].copy()
-            
+
             # Add technical indicators
             data['RSI'] = Calculations.compute_rsi(data['Close'], rsi_period)
             data['SMA20'] = data['Close'].rolling(window=20, min_periods=1).mean()
@@ -180,14 +181,15 @@ class Utils:
             # Add skewness and kurtosis
             data['Skewness'] = data['Returns'].rolling(window=20, min_periods=1).skew()
             data['Kurtosis'] = data['Returns'].rolling(window=20, min_periods=1).kurt()
-            
+
+            Utils.log_message(f"INFO: Input data: {len(data)} rows")
             # Select only FEATURE_COLUMNS to ensure consistent output
             data = data[FEATURE_COLUMNS]
-            
             # Drop rows with NaN values
             data = data.dropna()
-            
+
             Utils.log_message(f"INFO: Preprocessed data: {len(data)} rows, columns: {data.columns.tolist()}")
+
             return data
         except Exception as e:
             Utils.log_message(f"ERROR: Error preprocessing data: {e}")
@@ -208,8 +210,62 @@ class Utils:
             st.toast(action_message, icon=action_icons[action])
 
     @staticmethod
+    def calculate_reward(prev_value, curr_value, action, fee_history, portfolio_value_history, data, index, initial_cash, epoch_returns):
+        """
+        Calculate the reward for a trading action based on returns, fees, drawdown, and technical indicators.
+
+        Args:
+            prev_value (float): Portfolio value before the action.
+            curr_value (float): Portfolio value after the action.
+            action (int): Action taken (0: Hold, 1: Buy, 2: Sell).
+            fee_history (list): List of recent transaction fees.
+            portfolio_value_history (list): History of portfolio values.
+            data (pd.DataFrame): DataFrame containing price and indicator data.
+            index (int): Current index in the data.
+            initial_cash (float): Initial portfolio cash for scaling penalties.
+
+        Returns:
+            float: Calculated reward value.
+        """
+        ret = (curr_value - prev_value) / (prev_value + 1e-9)
+        fee_penalty = 0
+        reward = 0
+        volatility = data['Close'].pct_change().rolling(14).std().iloc[index]
+        if pd.isna(volatility) or volatility == 0:
+            volatility = 0.02
+        if portfolio_value_history:
+            max_value = np.max(portfolio_value_history)
+            drawdown = (max_value - curr_value) / (max_value + 1e-9)
+            drawdown_penalty = drawdown * 0.5 if action != 2 else drawdown * 0.2  # Reduced penalty for selling
+        else:
+            drawdown_penalty = 0.0
+        if action != 0 and fee_history:
+            recent_fees = fee_history[-1]
+            portfolio_scale = curr_value / (initial_cash + 1e-9)
+            volatility_factor = 0.5 if action == 2 else 1.0  # Reduced volatility impact for selling
+            fee_penalty = recent_fees * (1.0 + volatility / 0.02 * volatility_factor) / portfolio_scale
+            if action == 2:
+                reward += 0.5  # Baseline reward for selling
+                current_rsi_div = data['RSI_Divergence'].iloc[index]
+                current_bb_pen = data.get('BB_Penetration', pd.Series(0)).iloc[index]
+                if current_rsi_div == 1:
+                    reward += 0.5
+                if current_bb_pen == 1:
+                    reward += 0.3
+        elif action == 0 and volatility > 0.03:
+            reward = 0.1
+        epoch_returns.append(ret)
+        if len(epoch_returns) > 1:
+            mean_ret = np.mean(epoch_returns[-50:])
+            std_ret = np.std(epoch_returns[-50:]) + 1e-9
+            reward = mean_ret / std_ret - fee_penalty - drawdown_penalty
+        else:
+            reward = reward - fee_penalty - drawdown_penalty
+        return float(reward), float(ret)
+
+    @staticmethod
     def check_and_restore_settings(agent, current_settings, comparison_keys, context=""):
-        loaded_settings = agent.get_configuration_settings().copy()
+        loaded_settings = agent.get_configuration_settings().copy() if agent else None
 
         if loaded_settings is None:
             Utils.log_message(f"INFO: No agent settings provided for {context} comparison")
@@ -224,7 +280,7 @@ class Utils:
             agent_value = loaded_settings.get(key, None)
             current_value = current_settings.get(key, None)
 
-            if key in ['start_date', 'end_date']:
+            if key in ['training_start_date', 'training_end_date']:
                 agent_value = pd.Timestamp(agent_value).date() if pd.notna(agent_value) else agent_value
                 current_value = pd.Timestamp(current_value).date() if pd.notna(current_value) else current_value
 
@@ -235,22 +291,24 @@ class Utils:
                 continue
 
             if agent_value != current_value:
-                mismatches.update({key: { 'Agent': agent_value, 'Current': current_value}})
+                mismatches.update({key: { f"{agent.ticker} Agent": agent_value, 'Current': current_value}})
 
         if mismatches:
             Utils.log_message(f"INFO: Settings mismatch detected in {context}: {mismatches}")
             with st.container(border=True):
-                with st.expander(f"{context}: Settings mismatch between agent and current settings"):
+                with st.expander(f"{context}: Settings mismatch between trained agent and current settings"):
                     st.dataframe(pd.DataFrame(mismatches).T.astype(str))
                 cols=st.columns(2)
                 if cols[0].button("Restore Agent's Settings", key=f"restore_checkpoint_{context.lower().replace(' ', '_')}", type="primary", use_container_width=True):
+                    Utils.log_message(f"INFO: Restoring Agent's settings for {context}: {st.session_state.user_settings}")
                     current_settings.update(loaded_settings)
                     st.session_state.user_settings = current_settings
-                    Utils.log_message(f"INFO: Restoring Agent's settings for {context}: {st.session_state.user_settings}")
                     st.rerun()
                 if cols[1].button("Use Current Settings", key=f"keep_current_{context.lower().replace(' ', '_')}", use_container_width=True):
-                    st.session_state.agent = None
                     Utils.log_message(f"INFO: Keeping current settings for {context}: {st.session_state.user_settings}")
+                    if st.session_state.agent:
+                        st.session_state.agent.update_settings(current_settings)
+                    st.session_state.agent = None
                     st.rerun()
                 return False
         return True
@@ -288,37 +346,40 @@ class Utils:
                     raise
 
     @staticmethod
-    def fetch_data(ticker, start_date, end_date):
-        def download_from_yfinance(ticker, start_date, end_date):
-            import yfinance as yf
-            from datetime import datetime
-            
+    def fetch_data(ticker, training_start_date, training_end_date):
+        import yfinance as yf
+        from datetime import datetime
+        def download_from_yfinance(ticker, training_start_date, training_end_date):
             current_date = datetime.now().date()
-            
+
             try:
-                if start_date is None or end_date is None:
-                    Utils.log_message(f"ERROR: Start date or end date is None: start_date={start_date}, end_date={end_date}")
+                if training_start_date is None or training_end_date is None:
+                    Utils.log_message(f"ERROR: Start date or end date is None: training_start_date={training_start_date}, training_end_date={training_end_date}")
                     return pd.DataFrame()
-                if isinstance(start_date, str):
-                    start_date = pd.Timestamp(start_date).date()
-                if isinstance(end_date, str):
-                    end_date = pd.Timestamp(end_date).date()
+
+                if isinstance(training_start_date, str):
+                    training_start_date = pd.Timestamp(training_start_date).date()
+
+                if isinstance(training_end_date, str):
+                    training_end_date = pd.Timestamp(training_end_date).date()
+
             except ValueError as e:
-                Utils.log_message(f"ERROR: Invalid date format: start_date={start_date}, end_date={end_date}, error={e}")
+                Utils.log_message(f"ERROR: Invalid date format: training_start_date={training_start_date}, training_end_date={training_end_date}, error={e}")
                 return pd.DataFrame()
 
-            if end_date > current_date:
-                Utils.log_message(f"WARNING: End date {end_date} is in the future. Setting to {current_date}")
-                end_date = current_date
+            if training_end_date > current_date:
+                Utils.log_message(f"WARNING: End date {training_end_date} is in the future. Setting to {current_date}")
+                training_end_date = current_date
 
-            if start_date >= end_date:
-                Utils.log_message(f"ERROR: Invalid date range: start_date {start_date} >= end_date {end_date}")
+            if training_start_date >= training_end_date:
+                Utils.log_message(f"ERROR: Invalid date range: training_start_date {training_start_date} >= training_end_date {training_end_date}")
                 return pd.DataFrame()
             
-            df = yf.download(ticker, start=start_date, end=end_date, progress=False)
-            
+            df = yf.download(ticker, start=training_start_date, end=training_end_date, progress=False)
+
             return df
-        return Utils.perform_using_retries(lambda: download_from_yfinance(ticker, start_date, end_date))
+
+        return Utils.perform_using_retries(lambda: download_from_yfinance(ticker, training_start_date, training_end_date))
 
     @staticmethod
     def log_message(msg, ui_output=False, console_output=False, file_output=True, toast_output=False):
