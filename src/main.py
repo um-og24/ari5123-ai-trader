@@ -194,9 +194,6 @@ def _render_sidebar(saved_settings=None):
             'trading_simulation_delay': trading_simulation_delay
         }
 
-        if st.button('Apply changes', type="primary", use_container_width=True):
-            st.session_state.agent = EnsembleAgent.init_a_new_agent(st.session_state.user_settings)
-
     return settings
 
 def _render_main_ui(agent, settings):
@@ -229,13 +226,13 @@ def _render_main_ui(agent, settings):
 
 
 def _main():
-    _render_main_ui(st.session_state.agent, st.session_state.user_settings)
-
     st.session_state.user_settings = _render_sidebar(st.session_state.user_settings)
         
     if st.session_state.agent is None or st.session_state.agent.ticker != st.session_state.user_settings['ticker']:
         st.session_state.agent = EnsembleAgent.init_a_new_agent(st.session_state.user_settings)
-        st.rerun()
+
+    _render_main_ui(st.session_state.agent, st.session_state.user_settings)
+
 
 
 
