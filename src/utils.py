@@ -342,44 +342,66 @@ class Utils:
                     time.sleep(delay)
                     delay *= 2
                 else:
-                    Utils.log_message(f"ERROR: Max retries reached. Raising exception.")
-                    raise
+                    Utils.log_message(f"ERROR: Max retries reached. Raising exception: '{str(e)}'")
+                    raise e
 
     @staticmethod
     def fetch_data(ticker, training_start_date, training_end_date):
-        import yfinance as yf
         from datetime import datetime
+        current_date = datetime.now().date()
+
+        try:
+            if training_start_date is None or training_end_date is None:
+                Utils.log_message(f"ERROR: Start date or end date is None: training_start_date={training_start_date}, training_end_date={training_end_date}")
+                return pd.DataFrame()
+
+            if isinstance(training_start_date, str):
+                training_start_date = pd.Timestamp(training_start_date).date()
+
+            if isinstance(training_end_date, str):
+                training_end_date = pd.Timestamp(training_end_date).date()
+
+        except ValueError as e:
+            Utils.log_message(f"ERROR: Invalid date format: training_start_date={training_start_date}, training_end_date={training_end_date}, error={e}")
+            return pd.DataFrame()
+
+        if training_end_date > current_date:
+            Utils.log_message(f"WARNING: End date {training_end_date} is in the future. Setting to {current_date}")
+            training_end_date = current_date
+
+        if training_start_date >= training_end_date:
+            Utils.log_message(f"ERROR: Invalid date range: training_start_date {training_start_date} >= training_end_date {training_end_date}")
+            return pd.DataFrame()
+
         def download_from_yfinance(ticker, training_start_date, training_end_date):
-            current_date = datetime.now().date()
+            import yfinance as yf
 
-            try:
-                if training_start_date is None or training_end_date is None:
-                    Utils.log_message(f"ERROR: Start date or end date is None: training_start_date={training_start_date}, training_end_date={training_end_date}")
-                    return pd.DataFrame()
+            data = yf.download(ticker, start=training_start_date, end=training_end_date, progress=True, auto_adjust=False)
 
-                if isinstance(training_start_date, str):
-                    training_start_date = pd.Timestamp(training_start_date).date()
+            if data.empty:
+                msg=f"Data could not be obtained form yfinance for ticker {ticker} from {training_start_date} to {training_end_date}"
+                Utils.log_message(msg)
+                raise ValueError(msg)
 
-                if isinstance(training_end_date, str):
-                    training_end_date = pd.Timestamp(training_end_date).date()
+            return data
 
-            except ValueError as e:
-                Utils.log_message(f"ERROR: Invalid date format: training_start_date={training_start_date}, training_end_date={training_end_date}, error={e}")
-                return pd.DataFrame()
+        def download_from_pandas_datareader(ticker, start_date, end_date):
+            import pandas_datareader as pdr
+            data = pdr.get_data_stooq(ticker, start=start_date, end=end_date)
 
-            if training_end_date > current_date:
-                Utils.log_message(f"WARNING: End date {training_end_date} is in the future. Setting to {current_date}")
-                training_end_date = current_date
+            if data.empty:
+                msg=f"Data could not be obtained from pandas_datareader for ticker {ticker} from {training_start_date} to {training_end_date}"
+                Utils.log_message(msg)
+                raise ValueError(msg)
 
-            if training_start_date >= training_end_date:
-                Utils.log_message(f"ERROR: Invalid date range: training_start_date {training_start_date} >= training_end_date {training_end_date}")
-                return pd.DataFrame()
-            
-            df = yf.download(ticker, start=training_start_date, end=training_end_date, progress=False)
+            return data
 
-            return df
+        try:
+            data = Utils.perform_using_retries(lambda: download_from_yfinance(ticker, training_start_date, training_end_date))
+            return data
+        except:
+            return Utils.perform_using_retries(lambda: download_from_pandas_datareader(ticker, training_start_date, training_end_date))
 
-        return Utils.perform_using_retries(lambda: download_from_yfinance(ticker, training_start_date, training_end_date))
 
     @staticmethod
     def log_message(msg, ui_output=False, console_output=False, file_output=True, toast_output=False):

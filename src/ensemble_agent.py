@@ -55,7 +55,7 @@ class EnsembleAgent:
 
         self.training_data = self.get_data(self.training_start_date, self.training_end_date)
         if self.training_data.empty:
-            raise ValueError(f"No training data available for ticker {self.ticker} from {self.training_start_date} to {self.training_end_date}")
+            raise ValueError(f"No training data could be obtained for ticker {self.ticker} from {self.training_start_date} to {self.training_end_date}")
         
         self.dqn_agent = DQNAgent(
             ticker=self.ticker, training_start_date=self.training_start_date, training_end_date=self.training_end_date, model_dir=self.model_dir,
