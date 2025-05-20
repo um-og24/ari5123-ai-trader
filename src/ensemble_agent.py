@@ -144,7 +144,7 @@ class EnsembleAgent:
             'use_smote': settings['use_smote'] if settings else self.use_smote,
             'dqn_weight_scale': settings['dqn_weight_scale'] if settings else self.dqn_weight_scale,
             'capital_type': settings['capital_type'] if settings else self.capital_type,
-            'reference_capital': settings['capital_percentage'] if settings else self.c,
+            'reference_capital': settings['reference_capital'] if settings else self.reference_capital,
             'capital_percentage': settings['capital_percentage'] if settings else self.capital_percentage,
             'epochs': settings['epochs'] if settings else self.epochs,
             'confirmation_steps': settings['confirmation_steps'] if settings else self.confirmation_steps
