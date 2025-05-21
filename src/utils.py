@@ -210,60 +210,6 @@ class Utils:
             st.toast(action_message, icon=action_icons[action])
 
     @staticmethod
-    def calculate_reward(prev_value, curr_value, action, fee_history, portfolio_value_history, data, index, initial_cash, epoch_returns):
-        """
-        Calculate the reward for a trading action based on returns, fees, drawdown, and technical indicators.
-
-        Args:
-            prev_value (float): Portfolio value before the action.
-            curr_value (float): Portfolio value after the action.
-            action (int): Action taken (0: Hold, 1: Buy, 2: Sell).
-            fee_history (list): List of recent transaction fees.
-            portfolio_value_history (list): History of portfolio values.
-            data (pd.DataFrame): DataFrame containing price and indicator data.
-            index (int): Current index in the data.
-            initial_cash (float): Initial portfolio cash for scaling penalties.
-
-        Returns:
-            float: Calculated reward value.
-        """
-        ret = (curr_value - prev_value) / (prev_value + 1e-9)
-        fee_penalty = 0
-        reward = 0
-        volatility = data['Close'].pct_change().rolling(14).std().iloc[index]
-        if pd.isna(volatility) or volatility == 0:
-            volatility = 0.02
-        if portfolio_value_history:
-            max_value = np.max(portfolio_value_history)
-            drawdown = (max_value - curr_value) / (max_value + 1e-9)
-            drawdown_penalty = drawdown * 0.5 if action != 2 else drawdown * 0.2  # Reduced penalty for selling
-        else:
-            drawdown_penalty = 0.0
-        if action != 0 and fee_history:
-            recent_fees = fee_history[-1]
-            portfolio_scale = curr_value / (initial_cash + 1e-9)
-            volatility_factor = 0.5 if action == 2 else 1.0  # Reduced volatility impact for selling
-            fee_penalty = recent_fees * (1.0 + volatility / 0.02 * volatility_factor) / portfolio_scale
-            if action == 2:
-                reward += 0.5  # Baseline reward for selling
-                current_rsi_div = data['RSI_Divergence'].iloc[index]
-                current_bb_pen = data.get('BB_Penetration', pd.Series(0)).iloc[index]
-                if current_rsi_div == 1:
-                    reward += 0.5
-                if current_bb_pen == 1:
-                    reward += 0.3
-        elif action == 0 and volatility > 0.03:
-            reward = 0.1
-        epoch_returns.append(ret)
-        if len(epoch_returns) > 1:
-            mean_ret = np.mean(epoch_returns[-50:])
-            std_ret = np.std(epoch_returns[-50:]) + 1e-9
-            reward = mean_ret / std_ret - fee_penalty - drawdown_penalty
-        else:
-            reward = reward - fee_penalty - drawdown_penalty
-        return float(reward), float(ret)
-
-    @staticmethod
     def check_and_restore_settings(agent, current_settings, comparison_keys, context=""):
         loaded_settings = agent.get_configuration_settings().copy() if agent else None
 
@@ -313,6 +259,7 @@ class Utils:
                 return False
         return True
 
+
     @staticmethod
     def display_timer_until_rerun(wait_time, text="", placeholder=None):
         import time
@@ -330,6 +277,7 @@ class Utils:
             placeholder_toast.toast(f"***{text} {int(wait_time-counter)} seconds...***", icon='⌛')
         st.rerun()
 
+
     @staticmethod
     def perform_using_retries(delegate, max_attempts=3, delay=1):
         import time
@@ -344,6 +292,7 @@ class Utils:
                 else:
                     Utils.log_message(f"ERROR: Max retries reached. Raising exception: '{str(e)}'")
                     raise e
+
 
     @staticmethod
     def fetch_data(ticker, training_start_date, training_end_date):
@@ -397,10 +346,10 @@ class Utils:
             return data
 
         try:
-            data = Utils.perform_using_retries(lambda: download_from_yfinance(ticker, training_start_date, training_end_date))
+            data = Utils.perform_using_retries(lambda: download_from_pandas_datareader(ticker, training_start_date, training_end_date))
             return data
         except:
-            return Utils.perform_using_retries(lambda: download_from_pandas_datareader(ticker, training_start_date, training_end_date))
+            return Utils.perform_using_retries(lambda: download_from_yfinance(ticker, training_start_date, training_end_date))
 
 
     @staticmethod

@@ -15,6 +15,7 @@ from sklearn.preprocessing import StandardScaler
 from scipy.special import softmax
 from itertools import product
 from utils import Utils, FEATURE_COLUMNS
+from calculations import Calculations
 
 class DQNAgent:
     def __init__(self, ticker, training_start_date, training_end_date, model_dir, lookback, initial_cash, trade_fee, risk_per_trade, atr_multiplier, atr_period, atr_smoothing, expected_feature_columns=FEATURE_COLUMNS):
@@ -497,7 +498,7 @@ class DQNAgent:
             next_price = data['Close'].iloc[t + 1]
             curr_value = self.simulate_trade(None, next_price, data, t+1, max_trades, max_fee)
 
-            reward, _ = Utils.calculate_reward(prev_value, curr_value, action, self.fee_history, self.portfolio_value_history, data, t, self.initial_cash, epoch_returns)
+            reward, _ = Calculations.calculate_reward(prev_value, curr_value, action, self.fee_history, self.portfolio_value_history, data, t, self.initial_cash, epoch_returns)
             done = (t == len(data) - 2)
 
             next_state = states[t - self.lookback + 1] if t < len(states) + self.lookback - 1 else states[-1]

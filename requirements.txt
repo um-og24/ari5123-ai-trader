@@ -9,3 +9,4 @@ scikit-learn
 cloud-tpu-client
 imbalanced-learn
 optuna
+pandas_datareader

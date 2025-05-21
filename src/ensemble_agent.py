@@ -13,6 +13,7 @@ from rf_agent import RFAgent
 from dqn_agent import DQNAgent
 from portfolio_tracker import PortfolioTracker
 from utils import Utils, FEATURE_COLUMNS
+from calculations import Calculations
 
 class EnsembleAgent:
     def __init__(self, ticker, training_start_date, training_end_date, model_dir, lookback, initial_cash, trade_fee, risk_per_trade, 
@@ -461,7 +462,7 @@ class EnsembleAgent:
             curr_value = self.dqn_agent.simulate_trade(None, next_price, max_trades_per_epoch=self.max_trades_per_epoch,
                                                     max_fee_per_epoch=self.max_fee_per_epoch, data=self.training_data, index=t + 1,
                                                     portfolio_tracker=portfolio_tracker)
-            reward, ret = Utils.calculate_reward(prev_value, curr_value, action, self.dqn_agent.fee_history, self.portfolio_value_history, self.training_data, t, self.initial_cash, epoch_returns)
+            reward, ret = Calculations.calculate_reward(prev_value, curr_value, action, self.dqn_agent.fee_history, self.portfolio_value_history, self.training_data, t, self.initial_cash, epoch_returns)
             done = (t == len(self.training_data) - 2)
             next_state = training_data[t - self.lookback + 1] if t < len(training_data) + self.lookback - 1 else training_data[-1]
             self.dqn_agent.remember(state, action, reward, next_state, done)
