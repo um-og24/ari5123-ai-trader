@@ -10,8 +10,7 @@ from calculations import Calculations
 from chart_builder import ChartBuilder
 from utils import Utils, SETTING_KEYS
 
-def _execute_trade(agent, settings, action, current_price, timestamp, q_values, dqn_action, rf_action):
-    portfolio = st.session_state.portfolio_tracker
+def _execute_trade(agent, settings, portfolio, action, current_price, timestamp, q_values, dqn_action, rf_action):
     current_price = float(current_price.iloc[0]) if hasattr(current_price, 'iloc') else float(current_price)
     transaction_icons=["✅", "🚫", "❌", "🕔"]
     transaction_message = ""
@@ -100,6 +99,7 @@ def _execute_trade(agent, settings, action, current_price, timestamp, q_values, 
         })
     Utils.log_message(f"INFO: Action={action}, DQN={dqn_action}, RF={rf_action}, Recent Actions={st.session_state.recent_actions}, Cash={portfolio.cash}, Min Trade Cost={min_trade_cost}, Fee={fee_amount}")
     return transaction_message, transaction_icon
+
 
 def render_live_trading(agent, settings):
     cols = st.columns([2, 3])
@@ -253,7 +253,7 @@ def render_live_trading(agent, settings):
             current_price = agent.trading_data['Close'].iloc[i]
             portfolio = st.session_state.portfolio_tracker
             portfolio.update_bh_position_value(settings['ticker'], current_price, timestamp)
-            transaction_message, transaction_icon = _execute_trade(agent, settings, action, current_price, timestamp, q_values, dqn_action, rf_action)
+            transaction_message, transaction_icon = _execute_trade(agent, settings, portfolio, action, current_price, timestamp, q_values, dqn_action, rf_action)
             with placeholder_transaction.container():
                 if transaction_message:
                     st.write("**Transaction Outcome**")

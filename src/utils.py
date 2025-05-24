@@ -25,7 +25,7 @@ def _init_logger():
 
 logger = _init_logger()
 
-REQUIRED_DATA_COLUMNS=['Open', 'High', 'Low', 'Close', 'Volume']
+REQUIRED_DATA_COLUMNS=['Open', 'High', 'Low', 'Close', 'Volume'] # OHLCV Features
 FEATURE_COLUMNS=REQUIRED_DATA_COLUMNS + ['RSI', 'SMA20', 'MACD', 'BB_Upper', 'BB_Lower', 'BB', 'BB_Penetration',
                 'ATR', 'Returns', 'Volatility', 'RSI_Slope', 'Price_Slope', 'RSI_Divergence',
                 'Lag1_Return', 'Lag3_Return', 'Lag5_Return', 'Skewness', 'Kurtosis']
@@ -295,40 +295,69 @@ class Utils:
 
 
     @staticmethod
-    def fetch_data(ticker, training_start_date, training_end_date):
+    def fetch_data(ticker, start_date, end_date):
         from datetime import datetime
         current_date = datetime.now().date()
 
         try:
-            if training_start_date is None or training_end_date is None:
-                Utils.log_message(f"ERROR: Start date or end date is None: training_start_date={training_start_date}, training_end_date={training_end_date}")
+            if start_date is None or end_date is None:
+                Utils.log_message(f"ERROR: Start date or end date is None: training_start_date={start_date}, training_end_date={end_date}")
                 return pd.DataFrame()
 
-            if isinstance(training_start_date, str):
-                training_start_date = pd.Timestamp(training_start_date).date()
+            if isinstance(start_date, str):
+                start_date = pd.Timestamp(start_date).date()
 
-            if isinstance(training_end_date, str):
-                training_end_date = pd.Timestamp(training_end_date).date()
-
+            if isinstance(end_date, str):
+                end_date = pd.Timestamp(end_date).date()
         except ValueError as e:
-            Utils.log_message(f"ERROR: Invalid date format: training_start_date={training_start_date}, training_end_date={training_end_date}, error={e}")
+            Utils.log_message(f"ERROR: Invalid date format: start_date={start_date}, training_end_date={end_date}, error={e}")
             return pd.DataFrame()
 
-        if training_end_date > current_date:
-            Utils.log_message(f"WARNING: End date {training_end_date} is in the future. Setting to {current_date}")
-            training_end_date = current_date
+        if end_date > current_date:
+            Utils.log_message(f"WARNING: End date {end_date} is in the future. Setting to {current_date}")
+            end_date = current_date
 
-        if training_start_date >= training_end_date:
-            Utils.log_message(f"ERROR: Invalid date range: training_start_date {training_start_date} >= training_end_date {training_end_date}")
+        if start_date >= end_date:
+            Utils.log_message(f"ERROR: Invalid date range: start_date {start_date} >= training_end_date {end_date}")
             return pd.DataFrame()
 
-        def download_from_yfinance(ticker, training_start_date, training_end_date):
+        def get_from_local(ticker, start_date, end_date):
+            import os
+            data_dir = "data"
+            os.makedirs(data_dir, exist_ok=True)
+
+            # Check local cache
+            filename = f"{ticker}_{start_date}_{end_date}.csv"
+            full_path = os.path.join(data_dir, filename)
+            if os.path.exists(full_path):
+                Utils.log_message(f"INFO: Loading data from cache: {full_path}")
+                return pd.read_csv(full_path, index_col=0, parse_dates=True)
+
+            # Check if any existing file fully contains the range
+            for file in os.listdir(data_dir):
+                if not file.endswith(".csv") or not file.startswith(ticker + "_"):
+                    continue
+                try:
+                    parts = file[:-4].split("_")
+                    file_start = pd.to_datetime(parts[1]).date()
+                    file_end = pd.to_datetime(parts[2]).date()
+                    if file_start <= start_date and file_end >= end_date:
+                        Utils.log_message(f"INFO: Found broader cached data: {file}")
+                        df = pd.read_csv(os.path.join(data_dir, file), index_col=0, parse_dates=True)
+                        df = df.loc[str(start_date):str(end_date)]
+                        return df
+                except Exception:
+                    continue  # Skip malformed filenames
+
+            return None
+
+        def download_from_yfinance(ticker, start_date, end_date):
             import yfinance as yf
 
-            data = yf.download(ticker, start=training_start_date, end=training_end_date, progress=True, auto_adjust=False)
+            data = yf.download(ticker, start=start_date, end=end_date, progress=True, auto_adjust=False)
 
             if data.empty:
-                msg=f"Data could not be obtained form yfinance for ticker {ticker} from {training_start_date} to {training_end_date}"
+                msg=f"ERROR: Data could not be obtained form yfinance for ticker {ticker} from {start_date} to {end_date}"
                 Utils.log_message(msg)
                 raise ValueError(msg)
 
@@ -339,17 +368,21 @@ class Utils:
             data = pdr.get_data_stooq(ticker, start=start_date, end=end_date)
 
             if data.empty:
-                msg=f"Data could not be obtained from pandas_datareader for ticker {ticker} from {training_start_date} to {training_end_date}"
+                msg=f"ERROR: Data could not be obtained from pandas_datareader for ticker {ticker} from {start_date} to {end_date}"
                 Utils.log_message(msg)
                 raise ValueError(msg)
 
             return data
 
         try:
-            data = Utils.perform_using_retries(lambda: download_from_pandas_datareader(ticker, training_start_date, training_end_date))
+            data = get_from_local(ticker, start_date, end_date)
+
+            if data is None:
+                data = Utils.perform_using_retries(lambda: download_from_pandas_datareader(ticker, start_date, end_date))
+
             return data
         except:
-            return Utils.perform_using_retries(lambda: download_from_yfinance(ticker, training_start_date, training_end_date))
+            return Utils.perform_using_retries(lambda: download_from_yfinance(ticker, start_date, end_date))
 
 
     @staticmethod
@@ -412,3 +445,10 @@ class Utils:
                         line = remove_timestamp(line)
                     logs.append(line)
         return logs
+
+    @staticmethod
+    def clear_log_file():
+        # Clear the content of the log file if it exists
+        if os.path.exists(LOG_FILE_PATH):
+            with open(LOG_FILE_PATH, "w", encoding="utf-8") as f:
+                pass  # Just opening in 'w' mode truncates the file

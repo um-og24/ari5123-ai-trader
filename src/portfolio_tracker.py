@@ -5,8 +5,8 @@ sys.dont_write_bytecode = True
 
 import uuid
 import pickle
-import numpy as np
 from datetime import datetime
+from calculations import Calculations
 from utils import Utils
 
 class PortfolioTracker:
@@ -20,6 +20,7 @@ class PortfolioTracker:
         self.realized_pnl = 0
         self.unrealized_pnl = 0
         self.total_fees = 0  # Track total fees paid
+
         # Buy-and-hold portfolio
         self.bh_holdings = {}  # {ticker: {quantity, buy_price}}
         self.bh_history = []
@@ -47,7 +48,7 @@ class PortfolioTracker:
             # Calculate new average price
             total_shares = self.holdings[ticker]['quantity'] + quantity
             total_cost_basis = (self.holdings[ticker]['quantity'] * self.holdings[ticker]['avg_price']) + cost
-            self.holdings[ticker]['avg_price'] = total_cost_basis / total_shares
+            self.holdings[ticker]['avg_price'] = total_cost_basis / total_shares if total_shares > 0.0 else 0.0
             self.holdings[ticker]['quantity'] = total_shares
         else:
             self.holdings[ticker] = {
@@ -229,3 +230,29 @@ class PortfolioTracker:
                 self._add_bh_history_point(ticker, price, timestamp)
         if not updated:
             Utils.log_message(f"WARNING: Skipped B&H history update: ticker {ticker} not found in bh_holdings")
+
+    def evaluate_buy_and_hold(self):
+        metrics = Calculations.compute_metrics(self.bh_history, is_bh=True)
+        return metrics['sharpe_ratio'], metrics['max_drawdown'], self.total_fees, self.bh_history[-1]['total_value']
+
+
+    def simulate_random_action(self, ticker, action, price, fee_percentage=0.001, timestamp=None):
+        """Simulate a random trading action (Hold, Buy, Sell) for the given ticker and price.
+        
+        Args:
+            action: Integer (0=Hold, 1=Buy, 2=Sell).
+            ticker: String, stock ticker symbol.
+            price: Float, current price of the ticker.
+            timestamp: Datetime, timestamp for the action (optional).
+        
+        Returns:
+            float: Total portfolio value after the action.
+        """
+        if action == 1 and self.cash >= price:
+            cost = self.cash // (1 + fee_percentage)
+            quantity = cost // price
+            self.buy(ticker, quantity, price, fee_percentage, timestamp)
+        elif action == 2 and ticker in self.holdings and self.holdings[ticker]['quantity'] > 0:
+            quantity = self.holdings[ticker]['quantity']
+            self.sell(ticker, quantity, price, fee_percentage, timestamp)
+

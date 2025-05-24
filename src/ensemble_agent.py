@@ -165,12 +165,12 @@ class EnsembleAgent:
             self.ticker = settings.get('ticker', self.ticker)
             self.training_start_date = pd.Timestamp(settings['training_start_date']).date()
             self.training_end_date = pd.Timestamp(settings['training_end_date']).date()
+            self.lookback = settings.get('lookback', self.lookback)
             self.initial_cash = settings.get('initial_cash', self.initial_cash)
             self.trade_fee = settings.get('trade_fee', self.trade_fee)
             self.risk_per_trade = settings.get('risk_per_trade', self.risk_per_trade)
             self.max_trades_per_epoch = settings.get('max_trades_per_epoch', self.max_trades_per_epoch)
             self.max_fee_per_epoch = settings.get('max_fee_per_epoch', self.max_fee_per_epoch)
-            self.risk_per_trade = settings.get('risk_per_trade', self.risk_per_trade)
             self.atr_multiplier = settings.get('atr_multiplier', self.atr_multiplier)
             self.atr_period = settings.get('atr_period', self.atr_period)
             self.atr_smoothing = settings.get('atr_smoothing', self.atr_smoothing)
@@ -620,7 +620,7 @@ class EnsembleAgent:
             _, rf_proba = self.rf_agent.predict(state)
             rf_confidence = np.max(rf_proba)
             
-            # Combine Sharpe and confidence
+            # Combine Sharpe and confidence to compute DQN weight, clipped to [0.3, 0.7] for stability
             dqn_score = ma_dqn_sharpe * dqn_confidence
             rf_score = ma_rf_sharpe * rf_confidence
             dqn_weight = dqn_score / (dqn_score + rf_score + 1e-9)

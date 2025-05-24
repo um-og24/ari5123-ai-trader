@@ -521,12 +521,12 @@ class DQNAgent:
         }
         return portfolio_values, metrics
 
-    def _tune_exploration_parameters(self, data, validation_split=0.3):
+    def _tune_exploration_parameters(self, data, validation_split=0.4):  # Increased split
         param_grid = {
-            'epsilon': [0.5, 0.7, 1.0],
-            'epsilon_decay': [0.995, 0.999],
-            'temperature': [0.5, 1.0],
-            'temperature_decay': [0.995, 0.999]
+            'epsilon': [0.3, 0.5, 0.7, 0.9],
+            'epsilon_decay': [0.9997, 0.9995, 0.999, 0.998],
+            'temperature': [0.3, 0.7, 1.0, 1.5],
+            'temperature_decay': [0.9997, 0.9995, 0.999, 0.998]
         }
         param_combinations = list(product(*param_grid.values()))
 
@@ -540,7 +540,7 @@ class DQNAgent:
         train_data, val_data = data.iloc[:train_size + self.lookback], data.iloc[train_size + self.lookback:]
 
         best_score, best_params = -float('inf'), None
-        for params in param_combinations:
+        for params in param_combinations[:50]:  # Sample 50 combinations
             params_dict = dict(zip(param_grid.keys(), params))
             self._apply_exploration_params(params_dict)
             self._simulate_training(train_states, train_data)

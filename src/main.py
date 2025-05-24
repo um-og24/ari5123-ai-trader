@@ -10,6 +10,7 @@ import pandas as pd
 
 from ensemble_agent import EnsembleAgent
 from portfolio_tracker import PortfolioTracker
+from utils import Utils
 from overview_ui import render_overview
 from training_ui import render_training
 from trading_ui import render_live_trading
@@ -17,7 +18,7 @@ from portfolio_ui import render_portfolio
 from trading_logs_ui import render_trade_log
 from system_logs_ui import render_system_logs
 
-DEFAULT_TICKER='AAPL'
+DEFAULT_TICKER="AAPL"
 
 def _initialize_session_state():
     defaults = {
@@ -102,9 +103,9 @@ def _render_sidebar(saved_settings=None):
             st.divider()
 
             st.subheader("Epochs")
-            default_epochs = saved_settings['epochs'] if saved_settings and saved_settings['epochs'] is not None else 10
+            default_epochs = saved_settings['epochs'] if saved_settings and saved_settings['epochs'] is not None else 20
             epochs = st.slider("Training Epochs", 1, 50, default_epochs)
-            default_lookback = saved_settings['lookback'] if saved_settings and saved_settings['lookback'] is not None else 14
+            default_lookback = saved_settings['lookback'] if saved_settings and saved_settings['lookback'] is not None else 30
             lookback = st.slider("Lookback Window (days)", 10, 60, default_lookback)
             default_max_trades_per_epoch = saved_settings['max_trades_per_epoch'] if saved_settings and saved_settings['max_trades_per_epoch'] is not None else 10000
             max_trades_per_epoch = st.number_input("Max Trades per Epoch (0 = unlimited)", 0, 100000, default_max_trades_per_epoch)
@@ -229,7 +230,12 @@ def _main():
     st.session_state.user_settings = _render_sidebar(st.session_state.user_settings)
         
     if st.session_state.agent is None or st.session_state.agent.ticker != st.session_state.user_settings['ticker']:
-        st.session_state.agent = EnsembleAgent.init_a_new_agent(st.session_state.user_settings)
+        try:
+            st.session_state.agent = EnsembleAgent.init_a_new_agent(st.session_state.user_settings)
+        except Exception as e:
+            st.error(f"Failed to initialize agent: {e}")
+            Utils.log_message(f"ERROR: Agent initialization failed: {e}")
+            st.session_state.agent = None
 
     _render_main_ui(st.session_state.agent, st.session_state.user_settings)
 

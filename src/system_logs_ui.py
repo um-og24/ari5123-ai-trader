@@ -20,7 +20,7 @@ def render_system_logs():
     cols[1].write("")
     if cols[1].button("View Recent Logs", type="tertiary", use_container_width=True):
         # Load logs from file at startup
-        system_logs = Utils.load_system_logs_from_file()
+        system_logs = Utils.load_system_logs_from_file()[-550:]  # Last 550 log entries
         with placeholder_content:
             # Clear previous logs display if needed, then display updated logs
             for i in range(len(system_logs) - 1, -1, -1):
@@ -46,8 +46,7 @@ def render_system_logs():
     cols[2].write("")
     if cols[2].button("Clear Logs", type="tertiary", use_container_width=True):
         st.session_state.system_logs=[]
-        # Clear the content of the log file if it exists
-        if os.path.exists(LOG_FILE_PATH):
-            with open(LOG_FILE_PATH, "w", encoding="utf-8") as f:
-                pass  # Just opening in 'w' mode truncates the file
+        Utils.clear_log_file()
+        st.success("Logs cleared!")
+        
 

@@ -352,119 +352,120 @@ class ChartBuilder:
             subplot_titles=['Stock Price with Trading Signals', 'Volume', 'RSI', 'MACD'],
             row_heights=[0.5, 0.2, 0.15, 0.15]
         )
-        fig.add_trace(
-            go.Candlestick(
-                x=data.index,
-                open=data['Open'],
-                high=data['High'],
-                low=data['Low'],
-                close=data['Close'],
-                name='Price',
-                increasing_line_color='green',
-                decreasing_line_color='red'
-            ),
-            row=1, col=1
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=data.index,
-                y=data['SMA20'],
-                mode='lines',
-                name='SMA20',
-                line=dict(color='blue', width=2)
-            ),
-            row=1, col=1
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=data.index,
-                y=data['BB_Upper'],
-                mode='lines',
-                name='BB Upper',
-                line=dict(color='purple', width=1, dash='dash')
-            ),
-            row=1, col=1
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=data.index,
-                y=data['BB_Lower'],
-                mode='lines',
-                name='BB Lower',
-                line=dict(color='purple', width=1, dash='dash')
-            ),
-            row=1, col=1
-        )
-        if len(actions) == len(data):
-            buy_signals = data.index[actions == 1]
-            buy_prices = data['Close'][actions == 1]
+        if data is not None:
             fig.add_trace(
-                go.Scatter(
-                    x=buy_signals,
-                    y=buy_prices,
-                    mode='markers',
-                    name='Buy Signal',
-                    marker=dict(symbol='triangle-up', size=10, color='green')
+                go.Candlestick(
+                    x=data.index,
+                    open=data['Open'],
+                    high=data['High'],
+                    low=data['Low'],
+                    close=data['Close'],
+                    name='Price',
+                    increasing_line_color='green',
+                    decreasing_line_color='red'
                 ),
                 row=1, col=1
             )
-            sell_signals = data.index[actions == 2]
-            sell_prices = data['Close'][actions == 2]
             fig.add_trace(
                 go.Scatter(
-                    x=sell_signals,
-                    y=sell_prices,
-                    mode='markers',
-                    name='Sell Signal',
-                    marker=dict(symbol='triangle-down', size=10, color='red')
+                    x=data.index,
+                    y=data['SMA20'],
+                    mode='lines',
+                    name='SMA20',
+                    line=dict(color='blue', width=2)
                 ),
                 row=1, col=1
             )
-            trade_indices = data.index[np.isin(actions, [1, 2])]
-            trade_prices = data['Close'][np.isin(actions, [1, 2])]
-            if len(trade_indices) > 1:
+            fig.add_trace(
+                go.Scatter(
+                    x=data.index,
+                    y=data['BB_Upper'],
+                    mode='lines',
+                    name='BB Upper',
+                    line=dict(color='purple', width=1, dash='dash')
+                ),
+                row=1, col=1
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=data.index,
+                    y=data['BB_Lower'],
+                    mode='lines',
+                    name='BB Lower',
+                    line=dict(color='purple', width=1, dash='dash')
+                ),
+                row=1, col=1
+            )
+            if len(actions) == len(data):
+                buy_signals = data.index[actions == 1]
+                buy_prices = data['Close'][actions == 1]
                 fig.add_trace(
                     go.Scatter(
-                        x=trade_indices,
-                        y=trade_prices,
-                        mode='lines',
-                        name='Trade Signal Line',
-                        line=dict(color='orange', width=2, dash='dot')
+                        x=buy_signals,
+                        y=buy_prices,
+                        mode='markers',
+                        name='Buy Signal',
+                        marker=dict(symbol='triangle-up', size=10, color='green')
                     ),
                     row=1, col=1
                 )
-        fig.add_trace(
-            go.Bar(
-                x=data.index,
-                y=data['Volume'],
-                name='Volume',
-                marker_color='grey',
-                opacity=0.5
-            ),
-            row=2, col=1
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=data.index,
-                y=data['RSI'],
-                mode='lines',
-                name='RSI',
-                line=dict(color='orange', width=2)
-            ),
-            row=3, col=1
-        )
-        fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
-        fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
-        fig.add_trace(
-            go.Scatter(
-                x=data.index,
-                y=data['MACD'],
-                mode='lines',
-                name='MACD',
-                line=dict(color='cyan', width=2)
-            ),
-            row=4, col=1
-        )
+                sell_signals = data.index[actions == 2]
+                sell_prices = data['Close'][actions == 2]
+                fig.add_trace(
+                    go.Scatter(
+                        x=sell_signals,
+                        y=sell_prices,
+                        mode='markers',
+                        name='Sell Signal',
+                        marker=dict(symbol='triangle-down', size=10, color='red')
+                    ),
+                    row=1, col=1
+                )
+                trade_indices = data.index[np.isin(actions, [1, 2])]
+                trade_prices = data['Close'][np.isin(actions, [1, 2])]
+                if len(trade_indices) > 1:
+                    fig.add_trace(
+                        go.Scatter(
+                            x=trade_indices,
+                            y=trade_prices,
+                            mode='lines',
+                            name='Trade Signal Line',
+                            line=dict(color='orange', width=2, dash='dot')
+                        ),
+                        row=1, col=1
+                    )
+            fig.add_trace(
+                go.Bar(
+                    x=data.index,
+                    y=data['Volume'],
+                    name='Volume',
+                    marker_color='grey',
+                    opacity=0.5
+                ),
+                row=2, col=1
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=data.index,
+                    y=data['RSI'],
+                    mode='lines',
+                    name='RSI',
+                    line=dict(color='orange', width=2)
+                ),
+                row=3, col=1
+            )
+            fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
+            fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
+            fig.add_trace(
+                go.Scatter(
+                    x=data.index,
+                    y=data['MACD'],
+                    mode='lines',
+                    name='MACD',
+                    line=dict(color='cyan', width=2)
+                ),
+                row=4, col=1
+            )
         fig.add_hline(y=0, line_dash="dash", line_color="black", row=4, col=1)
         fig.update_layout(
             title='Trading Signals for Stock Price',
@@ -485,12 +486,14 @@ class ChartBuilder:
         chart_placeholder.plotly_chart(fig, use_container_width=True)
 
     @staticmethod
-    def plot_portfolio_comparison(agent_history, bh_history, ticker, title=None):
+    def plot_portfolio_comparison(agent_history, bh_history, rnd_history, ticker, title=None):
         try:
             agent_timestamps = [h['timestamp'] for h in agent_history if h['total_value'] is not None]
             agent_values = [Calculations.to_scalar(h['total_value']) for h in agent_history if h['total_value'] is not None]
             bh_timestamps = [h['timestamp'] for h in bh_history if h['total_value'] is not None]
             bh_values = [Calculations.to_scalar(h['total_value']) for h in bh_history if h['total_value'] is not None]
+            rnd_timestamps = [h['timestamp'] for h in rnd_history if h['total_value'] is not None]
+            rnd_values = [Calculations.to_scalar(h['total_value']) for h in rnd_history if h['total_value'] is not None]
             
             if len(agent_timestamps) < 2:
                 Utils.log_message(f"WARNING: Insufficient agent data for comparison chart")
@@ -505,23 +508,34 @@ class ChartBuilder:
                 name='Agent Portfolio',
                 line=dict(color='blue')
             ))
-            if len(bh_values) > 1:
+            if bh_values and len(bh_values) > 1:
                 fig.add_trace(go.Scatter(
                     x=bh_timestamps,
                     y=bh_values,
                     mode='lines',
                     name='Buy-and-Hold Daily',
-                    line=dict(color='lightgreen', width=1, dash='dot')
+                    line=dict(color='green')
                 ))
                 fig.add_trace(go.Scatter(
                     x=[bh_timestamps[0], bh_timestamps[-1]],
                     y=[bh_values[0], bh_values[-1]],
                     mode='lines',
                     name='Buy-and-Hold Portfolio',
-                    line=dict(color='green')
+                    line=dict(color='lightgreen', width=1, dash='dot')
                 ))
             else:
                 Utils.log_message(f"WARNING: Insufficient B&H data for comparison chart")
+            
+            if rnd_values and len(rnd_values) > 1:
+                fig.add_trace(go.Scatter(
+                    x=rnd_timestamps,
+                    y=rnd_values,
+                    mode='lines',
+                    name='Random Strategy',
+                    line=dict(color='orange', dash='dash')
+                ))
+            else:
+                Utils.log_message(f"WARNING: Insufficient Random Values data for comparison chart")
             
             fig.update_layout(
                 title=title or f'Portfolio Value Comparison for {ticker}',
