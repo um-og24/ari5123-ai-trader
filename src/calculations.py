@@ -8,6 +8,9 @@ import pandas as pd
 from utils import Utils
 from sklearn.decomposition import PCA
 from imblearn.over_sampling import SMOTE
+    
+# Set seeds for reproducibility
+np.random.seed(42)
 
 class Calculations:
     """Centralized class for computing divers calculations."""
@@ -170,9 +173,9 @@ class Calculations:
         return {"pca": pca, "X_train": X_train, "X_val": X_val, "n_pca_components": n_pca_components}
 
     @staticmethod
-    def calculate_reward(prev_value, curr_value, action, fee_history, portfolio_value_history, data, index, initial_cash, epoch_returns):
+    def calculate_reward_old(prev_value, curr_value, action, fee_history, portfolio_value_history, data, index, initial_cash, epoch_returns, penalize_drawdowns=False):
         """
-        Calculate the reward for a trading action based on returns, fees, drawdown, and technical indicators.
+        Calculate a more complex reward for a trading action based on returns, fees, drawdown, and technical indicators.
 
         Args:
             prev_value (float): Portfolio value before the action.
@@ -196,76 +199,178 @@ class Calculations:
         volatility = data.get('ATR', data['Close'].pct_change().rolling(14).std()).iloc[index]
         if pd.isna(volatility) or volatility == 0:
             volatility = 0.02
-        volatility = min(volatility, 0.05)  # Cap volatility to prevent excessive penalties
+        volatility = min(volatility, 0.05)
         avg_volatility = data.get('ATR', data['Close'].pct_change().rolling(252).std()).mean() or 0.02
 
-        # Drawdown penalty (reduced severity)
+        # Drawdown penalty (only for significant drawdowns > 10%, no penalty for Buy)
         drawdown_penalty = 0.0
-        if portfolio_value_history:
-            max_value = np.max(portfolio_value_history)
-            drawdown = (max_value - curr_value) / (max_value + 1e-9)
-            trend = data['Close'].iloc[index] > data['Close'].rolling(50).mean().iloc[index]
-            # Penalize drawdown, with higher penalty for Buy in uptrend or non-Sell actions
-            drawdown_penalty = drawdown * (0.2 if action == 1 and trend else 0.3 if action != 2 else 0.1)
+        if penalize_drawdowns:
+            if portfolio_value_history:
+                max_value = np.max(portfolio_value_history)
+                drawdown = (max_value - curr_value) / (max_value + 1e-9)
+                if drawdown > 0.1:  # Only penalize drawdowns > 10%
+                    trend = data['Close'].iloc[index] > data['Close'].rolling(50).mean().iloc[index]
+                    drawdown_penalty = drawdown * (0.0 if action == 1 else 0.1 if action == 0 else 0.05)
 
-        # Fee penalty (reduced volatility impact)
+        # Fee penalty
         fee_penalty = 0.0
         if action != 0 and fee_history:
             recent_fees = fee_history[-1]
             portfolio_scale = curr_value / (initial_cash + 1e-9)
-            volatility_factor = 0.3 if action == 2 else 0.5  # Lowered factors
+            volatility_factor = 0.3 if action == 2 else 0.4
             fee_penalty = recent_fees * (1.0 + volatility / (avg_volatility + 1e-9) * volatility_factor) / portfolio_scale
-            fee_penalty = min(fee_penalty, 0.3)  # Lower cap
+            fee_penalty = min(fee_penalty, 0.3)
 
-        # Slippage penalty (reduced multiplier)
+        # Slippage penalty
         slippage = 0.0
         if action in [1, 2]:
             trade_size = abs(curr_value - prev_value) / (curr_value + 1e-9)
-            slippage = trade_size * volatility * 0.05  # Reduced from 0.1
+            slippage = trade_size * volatility * 0.05
 
-        # Base reward (increased for Buy and Sell)
+        # Base reward
         reward = 0.0
         indicator_bonus = 0.0
         if action == 2:  # Sell
-            reward += 0.7  # Increased from 0.5
+            reward += 0.7
             current_rsi_div = data['RSI_Divergence'].iloc[index] if 'RSI_Divergence' in data.columns and not pd.isna(data['RSI_Divergence'].iloc[index]) else 0
             current_bb_pen = data.get('BB_Penetration', pd.Series(0)).iloc[index] if not pd.isna(data.get('BB_Penetration', pd.Series(0)).iloc[index]) else 0
             if current_rsi_div == 1 and ret > 0:
-                indicator_bonus += 0.3
+                indicator_bonus += 0.4
             if current_bb_pen == 1 and data['Close'].iloc[index] < data['Close'].rolling(20).mean().iloc[index]:
-                indicator_bonus += 0.2
+                indicator_bonus += 0.3
         elif action == 1:  # Buy
-            reward += 0.4  # Increased from 0.2, removed volatility condition
-            # Add Buy-specific indicator bonuses
+            reward += 0.6
             current_rsi = data.get('RSI', pd.Series(50)).iloc[index]
             current_macd = data.get('MACD', pd.Series(0)).iloc[index]
             if current_rsi < 30 and not pd.isna(current_rsi):
-                indicator_bonus += 0.3
+                indicator_bonus += 0.4
             if current_macd > 0 and not pd.isna(current_macd):
-                indicator_bonus += 0.2
+                indicator_bonus += 0.3
         elif action == 0:  # Hold
             if volatility < 0.01:
-                reward += 0.3 * (initial_cash / curr_value)  # Increased from 0.2
+                reward += 0.3 * (initial_cash / curr_value)
             elif 0.01 <= volatility <= 0.03:
-                reward += 0.1  # New reward for moderate volatility
+                reward += 0.1
             elif volatility > 0.03:
                 reward += 0.05
 
-        # Risk-adjusted reward (reduced weight, longer window)
+        # Risk-adjusted reward
         sharpe_reward = 0.0
         if len(epoch_returns) > 1:
-            mean_ret = np.mean(epoch_returns[-200:])  # Increased from 100
+            mean_ret = np.mean(epoch_returns[-200:])
             std_ret = np.std(epoch_returns[-200:]) + 1e-9
-            sharpe_reward = np.clip(mean_ret / std_ret, -2, 2) * 0.5
+            sharpe_reward = np.clip(mean_ret / std_ret, -2, 2) * 0.4
 
-        # Long-term growth bonus (shorter window, higher multiplier)
+        # Long-term growth bonus
         growth_bonus = 0.0
-        if len(portfolio_value_history) > 50:  # Reduced from 100
+        if len(portfolio_value_history) > 50:
             long_term_growth = (curr_value - portfolio_value_history[-50]) / portfolio_value_history[-50]
-            growth_bonus = 0.5 * np.clip(long_term_growth, 0, 1)  # Increased from 0.3
+            growth_bonus = 0.75 * np.clip(long_term_growth, 0, 1)
 
-        # Combine components (adjusted weights)
-        reward = 0.5 * sharpe_reward + 0.5 * (reward + indicator_bonus) - fee_penalty - drawdown_penalty - slippage + growth_bonus
+        # Combine components
+        reward = 0.4 * sharpe_reward + 0.4 * (reward + indicator_bonus) - fee_penalty - drawdown_penalty - slippage + growth_bonus
+        Utils.log_message(f"DEBUG: Reward components: sharpe={sharpe_reward:.3f}, base+indicator={reward + indicator_bonus:.3f}, fee={-fee_penalty:.3f}, drawdown={-drawdown_penalty:.3f}, slippage={-slippage:.3f}, growth={growth_bonus:.3f}, total={reward:.3f}")
+
+        return float(reward), float(ret)
+
+    @staticmethod
+    def calculate_reward(prev_value, curr_value, action, fee_history, portfolio_value_history, data, index, initial_cash, epoch_returns, penalize_drawdowns=True):
+        """
+        Calculate a refined reward for a trading action to prioritize risk-adjusted returns and minimize trading costs.
+
+        Args:
+            prev_value (float): Portfolio value before the action.
+            curr_value (float): Portfolio value after the action.
+            action (int): Action taken (0: Hold, 1: Buy, 2: Sell).
+            fee_history (list): List of recent transaction fees.
+            portfolio_value_history (list): History of portfolio values.
+            data (pd.DataFrame): DataFrame containing price and indicator data.
+            index (int): Current index in the data.
+            initial_cash (float): Initial portfolio cash for scaling penalties.
+            epoch_returns (list): List of returns for the current epoch.
+            penalize_drawdowns (bool): If True, apply drawdown penalty.
+
+        Returns:
+            tuple: (reward, return) as floats.
+        """
+        # Calculate return
+        ret = (curr_value - prev_value) / (prev_value + 1e-8)
+        epoch_returns.append(ret)
+
+        # Volatility (use ATR, capped for stability)
+        volatility = data.get('ATR', pd.Series(0.02 * data['Close'])).iloc[index]
+        if pd.isna(volatility) or volatility == 0:
+            volatility = 0.02
+        volatility = min(volatility, 0.05)
+        avg_volatility = data.get('ATR', pd.Series(0.02 * data['Close'])).mean() or 0.02
+
+        # Drawdown penalty (only for drawdowns > 5%)
+        drawdown_penalty = 0.0
+        if penalize_drawdowns and portfolio_value_history:
+            max_value = np.max(portfolio_value_history)
+            drawdown = (max_value - curr_value) / (max_value + 1e-8)
+            if drawdown > 0.05:  # Changed from 0.1 to 0.05 for stricter control
+                trend = data['Close'].iloc[index] > data['Close'].rolling(50).mean().iloc[index]
+                drawdown_penalty = drawdown * (0.0 if action == 1 else 0.15 if action == 0 else 0.1)  # Increased penalty
+
+        # Fee penalty (scaled by portfolio size and volatility)
+        fee_penalty = 0.0
+        if action != 0 and fee_history:
+            recent_fees = fee_history[-1]
+            portfolio_scale = curr_value / (initial_cash + 1e-8)
+            volatility_factor = 0.5 if action == 2 else 0.6  # Increased from 0.3/0.4
+            fee_penalty = recent_fees * (1.5 + volatility / (avg_volatility + 1e-8) * volatility_factor) / portfolio_scale
+            fee_penalty = min(fee_penalty, 0.5)  # Increased cap from 0.3
+
+        # Slippage penalty (scaled by trade size and volatility)
+        slippage = 0.0
+        if action in [1, 2]:
+            trade_size = abs(curr_value - prev_value) / (curr_value + 1e-8)
+            slippage = trade_size * volatility * 0.1  # Increased from 0.05 for realism
+
+        # Base reward (reduced indicator reliance)
+        reward = 0.0
+        indicator_bonus = 0.0
+        if action == 2:  # Sell
+            reward += 0.5  # Reduced from 0.7
+            current_rsi_div = data['RSI_Divergence'].iloc[index] if 'RSI_Divergence' in data.columns and not pd.isna(data['RSI_Divergence'].iloc[index]) else 0
+            current_bb_pen = data.get('BB_Penetration', pd.Series(0)).iloc[index] if not pd.isna(data.get('BB_Penetration', pd.Series(0)).iloc[index]) else 0
+            if current_rsi_div == 1 and ret > 0:
+                indicator_bonus += 0.2  # Reduced from 0.4
+            if current_bb_pen == 1 and data['Close'].iloc[index] < data['Close'].rolling(20).mean().iloc[index]:
+                indicator_bonus += 0.15  # Reduced from 0.3
+        elif action == 1:  # Buy
+            reward += 0.4  # Reduced from 0.6
+            current_rsi = data.get('RSI', pd.Series(50)).iloc[index]
+            current_macd = data.get('MACD', pd.Series(0)).iloc[index]
+            if current_rsi < 30 and not pd.isna(current_rsi):
+                indicator_bonus += 0.2  # Reduced from 0.4
+            if current_macd > 0 and not pd.isna(current_macd):
+                indicator_bonus += 0.15  # Reduced from 0.3
+        elif action == 0:  # Hold
+            if volatility < 0.01:
+                reward += 0.2  # Reduced from 0.3
+            elif 0.01 <= volatility <= 0.03:
+                reward += 0.05  # Reduced from 0.1
+            elif volatility > 0.03:
+                reward += 0.02  # Reduced from 0.05
+
+        # Risk-adjusted reward (increased weight)
+        sharpe_reward = 0.0
+        if len(epoch_returns) > 10:  # Changed from 1 to 10 for stability
+            mean_ret = np.mean(epoch_returns[-200:])
+            std_ret = np.std(epoch_returns[-200:]) + 1e-8
+            sharpe_reward = np.clip(mean_ret / std_ret, -2, 2) * 0.6  # Increased from 0.4
+
+        # Long-term growth bonus (reduced to avoid short-term bias)
+        growth_bonus = 0.0
+        if len(portfolio_value_history) > 50:
+            long_term_growth = (curr_value - portfolio_value_history[-50]) / portfolio_value_history[-50]
+            growth_bonus = 0.5 * np.clip(long_term_growth, 0, 1)  # Reduced from 0.75
+
+        # Combine components (reweighted)
+        reward = 0.6 * sharpe_reward + 0.3 * (reward + indicator_bonus) - 1.5 * fee_penalty - 1.2 * drawdown_penalty - 1.5 * slippage + 0.4 * growth_bonus  # Adjusted weights
+        Utils.log_message(f"DEBUG: Reward components: sharpe={sharpe_reward:.3f}, base+indicator={reward + indicator_bonus:.3f}, fee={-fee_penalty:.3f}, drawdown={-drawdown_penalty:.3f}, slippage={-slippage:.3f}, growth={growth_bonus:.3f}, total={reward:.3f}")
 
         return float(reward), float(ret)
 

@@ -15,10 +15,14 @@ from portfolio_tracker import PortfolioTracker
 from utils import Utils, FEATURE_COLUMNS
 from calculations import Calculations
 
+# Set seeds for reproducibility
+random.seed(42)
+np.random.seed(42)
+
 class EnsembleAgent:
-    def __init__(self, ticker, training_start_date, training_end_date, model_dir, lookback, initial_cash, trade_fee, risk_per_trade, 
-                max_trades_per_epoch, max_fee_per_epoch, atr_multiplier, atr_period, atr_smoothing, use_smote, dqn_weight_scale,
-                capital_type, reference_capital, capital_percentage, epochs, confirmation_steps, expected_feature_columns=FEATURE_COLUMNS):
+    def __init__(self, ticker, training_start_date, training_end_date, model_dir, lookback, batch_size, initial_cash, trade_fee, risk_per_trade, 
+                max_trades_per_epoch, max_fee_per_epoch, atr_multiplier, atr_period, atr_smoothing, use_smote, dqn_weight_scale, capital_type,
+                reference_capital, capital_percentage, epochs, confirmation_steps, expected_feature_columns=FEATURE_COLUMNS):
 
         if max_fee_per_epoch > 0 and max_fee_per_epoch < trade_fee * initial_cash:
             Utils.log_message(f"WARNING: max_fee_per_epoch (€{max_fee_per_epoch:.2f}) may be too low for initial_cash (€{initial_cash:.2f}) and trade_fee ({trade_fee*100:.2f}%)")
@@ -27,6 +31,7 @@ class EnsembleAgent:
         self.training_start_date = pd.Timestamp(training_start_date).date()
         self.training_end_date = pd.Timestamp(training_end_date).date()
         self.lookback = lookback
+        self.batch_size = batch_size
         self.trade_fee = trade_fee
         self.initial_cash = initial_cash
         self.risk_per_trade = risk_per_trade
@@ -60,9 +65,8 @@ class EnsembleAgent:
         
         self.dqn_agent = DQNAgent(
             ticker=self.ticker, training_start_date=self.training_start_date, training_end_date=self.training_end_date, model_dir=self.model_dir,
-            lookback=self.lookback, initial_cash=self.initial_cash, trade_fee=self.trade_fee, risk_per_trade=self.risk_per_trade,
-            atr_multiplier=self.atr_multiplier, atr_period=self.atr_period, atr_smoothing=self.atr_smoothing,
-            expected_feature_columns=self.expected_feature_columns
+            lookback=self.lookback, batch_size=self.batch_size, initial_cash=self.initial_cash, trade_fee=self.trade_fee, risk_per_trade=self.risk_per_trade,
+            atr_multiplier=self.atr_multiplier, atr_period=self.atr_period, atr_smoothing=self.atr_smoothing, expected_feature_columns=self.expected_feature_columns
         )
         self.rf_agent = RFAgent(
             ticker=self.ticker, training_start_date=self.training_start_date, training_end_date=self.training_end_date, model_dir=self.model_dir,
@@ -134,6 +138,7 @@ class EnsembleAgent:
             'training_start_date': pd.Timestamp(settings['training_start_date'] if settings else self.training_start_date).isoformat(),
             'training_end_date': pd.Timestamp(settings['training_end_date'] if settings else self.training_end_date).isoformat(),
             'lookback': settings['lookback'] if settings else self.lookback,
+            'batch_size': settings['batch_size'] if settings else self.batch_size,
             'initial_cash': settings['initial_cash'] if settings else self.initial_cash,
             'trade_fee': settings['trade_fee'] if settings else self.trade_fee,
             'risk_per_trade': settings['risk_per_trade'] if settings else self.risk_per_trade,
@@ -166,6 +171,7 @@ class EnsembleAgent:
             self.training_start_date = pd.Timestamp(settings['training_start_date']).date()
             self.training_end_date = pd.Timestamp(settings['training_end_date']).date()
             self.lookback = settings.get('lookback', self.lookback)
+            self.batch_size = settings.get('batch_size', self.batch_size)
             self.initial_cash = settings.get('initial_cash', self.initial_cash)
             self.trade_fee = settings.get('trade_fee', self.trade_fee)
             self.risk_per_trade = settings.get('risk_per_trade', self.risk_per_trade)
@@ -197,6 +203,7 @@ class EnsembleAgent:
                 model_dir=self.model_dir,
                 initial_cash=saved_settings['initial_cash'],
                 lookback=saved_settings['lookback'],
+                batch_size=saved_settings['batch_size'],
                 ticker=saved_settings['ticker'],
                 training_start_date=self.training_start_date,
                 training_end_date=self.training_end_date,
@@ -248,6 +255,7 @@ class EnsembleAgent:
             'initial_cash': self.initial_cash,
             'trade_fee': self.trade_fee,
             'lookback': self.lookback,
+            'batch_size': self.batch_size,
             'risk_per_trade': self.risk_per_trade,
             'max_trades_per_epoch': self.max_trades_per_epoch,
             'max_fee_per_epoch': self.max_fee_per_epoch,
@@ -321,6 +329,12 @@ class EnsembleAgent:
                 self.action_counts = portfolio_state.get('action_counts', {'Hold': 0, 'Buy': 0, 'Sell': 0})
                 self.sharpe_history = portfolio_state.get('sharpe_history', {'dqn': [], 'rf': []})
                 loaded_settings = portfolio_state.get('settings', None)
+                self.lookback = loaded_settings.get('lookback', self.lookback)
+                self.batch_size = loaded_settings.get('batch_size', self.batch_size)
+                self.trade_fee = loaded_settings.get('trade_fee', self.trade_fee)
+                self.risk_per_trade = loaded_settings.get('risk_per_trade', self.risk_per_trade)
+                self.max_trades_per_epoch = loaded_settings.get('max_trades_per_epoch', self.max_trades_per_epoch)
+                self.max_fee_per_epoch = loaded_settings.get('max_fee_per_epoch', self.max_fee_per_epoch)
                 self.atr_multiplier = loaded_settings.get('atr_multiplier', self.atr_multiplier)
                 self.atr_period = loaded_settings.get('atr_period', self.atr_period)
                 self.atr_smoothing = loaded_settings.get('atr_smoothing', self.atr_smoothing)
@@ -645,6 +659,7 @@ class EnsembleAgent:
             'training_start_date': self.training_start_date,
             'training_end_date': self.training_end_date,
             'lookback': self.lookback,
+            'batch_size': self.batch_size,
             'trade_fee': self.trade_fee,
             'risk_per_trade': self.risk_per_trade,
             'max_trades_per_epoch': self.max_trades_per_epoch,
@@ -751,7 +766,7 @@ class EnsembleAgent:
             if isinstance(full_training_data.columns, pd.MultiIndex):
                 full_training_data.columns = [col[0] for col in full_training_data.columns]
 
-            batch_size = agent.dqn_agent.batch_size if agent.dqn_agent is not None else 64
+            batch_size = agent.dqn_agent.batch_size if agent.dqn_agent is not None else agent.batch_size
             if len(full_training_data) < settings['lookback'] + batch_size + 1:
                 raise ValueError("Not enough training_data for the selected lookback window and batch size. Please select a wider date range or reduce the lookback/batch size.")
 
@@ -769,6 +784,7 @@ class EnsembleAgent:
             training_end_date=settings['training_end_date'],
             model_dir=settings['model_dir'],
             lookback=settings['lookback'],
+            batch_size=settings['batch_size'],
             trade_fee=settings['trade_fee'],
             initial_cash=settings['initial_cash'],
             risk_per_trade=settings['risk_per_trade'],

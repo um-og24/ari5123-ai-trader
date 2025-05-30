@@ -41,8 +41,10 @@ def _initialize_session_state():
         'status_text': None,
         'rf_metrics': None,
         'rf_training_active': False,
-        'trading_start_date': pd.Timestamp.now().date() - pd.Timedelta(days=365),
-        'trading_end_date': pd.Timestamp.now().date() - pd.Timedelta(days=1),
+        'trading_start_date': pd.Timestamp("2023-01-01"),
+        'trading_end_date': pd.Timestamp("2025-05-25"),
+        # 'trading_start_date': pd.Timestamp.now().date() - pd.Timedelta(days=365),
+        # 'trading_end_date': pd.Timestamp.now().date() - pd.Timedelta(days=1),
         'trading_simulation_delay': 5
     }
     for key, value in defaults.items():
@@ -91,9 +93,11 @@ def _render_sidebar(saved_settings=None):
             st.subheader("Training Parameters")
 
             st.subheader("Date Range")
-            default_training_start_date = saved_settings['training_start_date'] if saved_settings and saved_settings['training_start_date'] is not None else pd.Timestamp.now().date() - pd.Timedelta(days=365)
+            # default_training_start_date = saved_settings['training_start_date'] if saved_settings and saved_settings['training_start_date'] is not None else pd.Timestamp.now().date() - pd.Timedelta(days=365)
+            default_training_start_date = saved_settings['training_start_date'] if saved_settings and saved_settings['training_start_date'] is not None else pd.Timestamp("2017-01-01").date()
             training_start_date = st.date_input("Start Date", value=default_training_start_date, key="training_start_date")
-            default_training_end_date = saved_settings['training_end_date'] if saved_settings and saved_settings['training_end_date'] is not None else pd.Timestamp.now().date() - pd.Timedelta(days=1)
+            # default_training_end_date = saved_settings['training_end_date'] if saved_settings and saved_settings['training_end_date'] is not None else pd.Timestamp.now().date() - pd.Timedelta(days=1)
+            default_training_end_date = saved_settings['training_end_date'] if saved_settings and saved_settings['training_end_date'] is not None else pd.Timestamp("2022-12-31").date()
             default_training_end_date = default_training_end_date if default_training_end_date > training_start_date else pd.Timestamp(training_start_date).date() + pd.Timedelta(days=365)
             training_end_date = st.date_input("End Date", value=default_training_end_date, key="training_end_date")
             if training_end_date <= training_start_date:
@@ -103,10 +107,12 @@ def _render_sidebar(saved_settings=None):
             st.divider()
 
             st.subheader("Epochs")
-            default_epochs = saved_settings['epochs'] if saved_settings and saved_settings['epochs'] is not None else 20
-            epochs = st.slider("Training Epochs", 1, 50, default_epochs)
+            default_epochs = saved_settings['epochs'] if saved_settings and saved_settings['epochs'] is not None else 50
+            epochs = st.slider("Training Epochs", 1, 150, default_epochs)
             default_lookback = saved_settings['lookback'] if saved_settings and saved_settings['lookback'] is not None else 30
-            lookback = st.slider("Lookback Window (days)", 10, 60, default_lookback)
+            lookback = st.slider("Lookback Window (days)", 5, 90, default_lookback)
+            default_batch_size = saved_settings.get('batch_size', 64) if saved_settings and saved_settings.get('batch_size', 64) is not None else 64
+            batch_size = st.slider("Batch Size", 16, 128, default_batch_size, step=32)
             default_max_trades_per_epoch = saved_settings['max_trades_per_epoch'] if saved_settings and saved_settings['max_trades_per_epoch'] is not None else 10000
             max_trades_per_epoch = st.number_input("Max Trades per Epoch (0 = unlimited)", 0, 100000, default_max_trades_per_epoch)
             default_max_fee_per_epoch = saved_settings['max_fee_per_epoch'] if saved_settings and saved_settings['max_fee_per_epoch'] is not None else 10000
@@ -182,6 +188,7 @@ def _render_sidebar(saved_settings=None):
             'capital_percentage': capital_percentage,
             'trade_fee': trade_fee,
             'lookback': lookback,
+            'batch_size': batch_size,
             'risk_per_trade': risk_per_trade,
             'epochs': epochs,
             'max_trades_per_epoch': max_trades_per_epoch,

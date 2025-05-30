@@ -11,6 +11,9 @@ from plotly.subplots import make_subplots
 from calculations import Calculations
 from utils import Utils
 
+# Set seeds for reproducibility
+np.random.seed(42)
+
 class ChartBuilder:
     """Centralized class for creating Plotly charts for portfolio and training visualization."""
     
@@ -162,7 +165,7 @@ class ChartBuilder:
         Plot stock price with executed transactions, Volume, RSI, and MACD.
 
         Args:
-            data (pd.DataFrame): DataFrame with stock price data (Open, High, Low, Close, Volume, SMA20, BB_Upper, BB_Lower, RSI, MACD).
+            data (pd.DataFrame): DataFrame with stock price data (Open, High, Low, Close, Volume, SMA20,  SMA80, BB_Upper, BB_Lower, RSI, MACD).
             portfolio (PortfolioTracker): PortfolioTracker instance containing transactions list.
             chart_placeholder: Streamlit placeholder for rendering the chart.
 
@@ -202,6 +205,19 @@ class ChartBuilder:
                 ),
                 row=1, col=1
             )
+
+            # SMA70 and Bollinger Bands
+            fig.add_trace(
+                go.Scatter(
+                    x=data.index,
+                    y=data['SMA70'],
+                    mode='lines',
+                    name='SMA70',
+                    line=dict(color='darkgreen', width=2)
+                ),
+                row=1, col=1
+            )
+
             fig.add_trace(
                 go.Scatter(
                     x=data.index,
@@ -352,7 +368,7 @@ class ChartBuilder:
             subplot_titles=['Stock Price with Trading Signals', 'Volume', 'RSI', 'MACD'],
             row_heights=[0.5, 0.2, 0.15, 0.15]
         )
-        if data is not None:
+        if data is not None and not data.empty:
             fig.add_trace(
                 go.Candlestick(
                     x=data.index,

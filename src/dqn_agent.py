@@ -17,8 +17,12 @@ from itertools import product
 from utils import Utils, FEATURE_COLUMNS
 from calculations import Calculations
 
+# Set seeds for reproducibility
+random.seed(42)
+np.random.seed(42)
+
 class DQNAgent:
-    def __init__(self, ticker, training_start_date, training_end_date, model_dir, lookback, initial_cash, trade_fee, risk_per_trade, atr_multiplier, atr_period, atr_smoothing, expected_feature_columns=FEATURE_COLUMNS):
+    def __init__(self, ticker, training_start_date, training_end_date, model_dir, lookback, batch_size, initial_cash, trade_fee, risk_per_trade, atr_multiplier, atr_period, atr_smoothing, expected_feature_columns=FEATURE_COLUMNS):
         tf.keras.backend.clear_session()
         self.ticker = ticker
         self.training_start_date = pd.Timestamp(training_start_date).date()
@@ -47,7 +51,7 @@ class DQNAgent:
         self.temperature = 1.0
         self.temperature_min = 0.1
         self.temperature_decay = 0.999
-        self.batch_size = 64
+        self.batch_size = batch_size
 
         # Portfolio management
         self.cash = initial_cash
@@ -74,17 +78,25 @@ class DQNAgent:
 
     def _build_model(self):
         def build():
-            model = tf.keras.models.Sequential([
+            model = tf.keras.Sequential([
+                # Input shape: (lookback, num_features)
                 tf.keras.layers.Input(shape=(self.lookback, len(self.expected_feature_columns))),
-                tf.keras.layers.LSTM(64, return_sequences=True, kernel_regularizer=tf.keras.regularizers.l1_l2(0.01)),
-                tf.keras.layers.Dropout(0.3),
+                # Single LSTM layer to capture temporal dependencies
+                tf.keras.layers.LSTM(48, return_sequences=False, kernel_regularizer=tf.keras.regularizers.l2(0.01)),
+                # Normalize to stabilize training
                 tf.keras.layers.LayerNormalization(),
-                tf.keras.layers.LSTM(32),
+                # Dropout to prevent overfitting
+                tf.keras.layers.Dropout(0.3),
+                # Dense layer for feature extraction
+                tf.keras.layers.Dense(32, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.01)),
                 tf.keras.layers.Dropout(0.2),
-                tf.keras.layers.Dense(24, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.01)),
+                # Output layer for Q-values (i.e. hold, buy, sell)
                 tf.keras.layers.Dense(3, activation='linear')
             ])
-            model.compile(loss='mse', optimizer='adam')
+            model.compile(
+                optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
+                loss='mse'
+            )
             return model
         return Utils.perform_using_retries(build)
 
@@ -348,6 +360,7 @@ class DQNAgent:
             'training_start_date': pd.Timestamp(self.training_start_date).isoformat(),
             'training_end_date': pd.Timestamp(self.training_end_date).isoformat(),
             'lookback': self.lookback,
+            'batch_size': self.batch_size,
             'trade_fee': self.trade_fee,
             'risk_per_trade': self.risk_per_trade,
             'atr_multiplier': self.atr_multiplier,
@@ -371,6 +384,7 @@ class DQNAgent:
                 self.training_start_date = pd.Timestamp(settings['training_start_date']).date()
                 self.training_end_date = pd.Timestamp(settings['training_end_date']).date()
                 self.lookback = settings.get('lookback', self.lookback)
+                self.batch_size = settings.get('batch_size', self.batch_size)
                 self.trade_fee = settings.get('trade_fee', self.trade_fee)
                 self.risk_per_trade = settings.get('risk_per_trade', self.risk_per_trade)
                 self.atr_multiplier = settings.get('atr_multiplier', self.atr_multiplier)
@@ -453,18 +467,18 @@ class DQNAgent:
             os.rmdir(checkpoint_dir)
             Utils.log_message(f"INFO: Removed empty checkpoints directory")
 
-    def train(self, data, max_trades_per_epoch, max_fee_per_epoch):
+    def train(self, data, max_trades_per_epoch, max_fee_per_epoch, progress_callback=None):
         states = self.preprocess_data(data)
         if not self._validate_training_data(states, data):
             return [], {}
 
-        self._apply_best_exploration_params(data)
+        self._apply_best_exploration_params(data, progress_callback)
         self.reset_portfolio()
 
         return self._run_training_loop(states, data, max_trades_per_epoch, max_fee_per_epoch)
 
-    def _apply_best_exploration_params(self, data):
-        params = self._tune_exploration_parameters(data)
+    def _apply_best_exploration_params(self, data, progress_callback=None):
+        params = self._tune_exploration_parameters(data, progress_callback=progress_callback)
         self.epsilon = params['epsilon']
         self.epsilon_decay = params['epsilon_decay']
         self.temperature = params['temperature']
@@ -521,7 +535,7 @@ class DQNAgent:
         }
         return portfolio_values, metrics
 
-    def _tune_exploration_parameters(self, data, validation_split=0.4):  # Increased split
+    def _tune_exploration_parameters(self, data, validation_split=0.4, progress_callback=None):
         param_grid = {
             'epsilon': [0.3, 0.5, 0.7, 0.9],
             'epsilon_decay': [0.9997, 0.9995, 0.999, 0.998],
@@ -540,7 +554,8 @@ class DQNAgent:
         train_data, val_data = data.iloc[:train_size + self.lookback], data.iloc[train_size + self.lookback:]
 
         best_score, best_params = -float('inf'), None
-        for params in param_combinations[:50]:  # Sample 50 combinations
+        total_combinations = min(50, len(param_combinations))
+        for idx, params in enumerate(param_combinations[:50]):
             params_dict = dict(zip(param_grid.keys(), params))
             self._apply_exploration_params(params_dict)
             self._simulate_training(train_states, train_data)
@@ -549,6 +564,13 @@ class DQNAgent:
             if sharpe > best_score:
                 best_score, best_params = sharpe, params_dict
             Utils.log_message(f"INFO: Exploration tuning: Params={params_dict}, Sharpe={sharpe:.4f}")
+            progress_callback(
+                progress=(idx + 1) / total_combinations,
+                params=params_dict,
+                sharpe=sharpe,
+                best_params=best_params or params_dict,
+                best_score=best_score
+            )
 
         if best_params:
             Utils.log_message(f"INFO: Best exploration parameters: {best_params}, Sharpe={best_score:.4f}")
@@ -557,7 +579,74 @@ class DQNAgent:
             Utils.log_message("WARNING: Exploration tuning failed, using default parameters")
             return self._get_current_exploration_params()
 
-    def simulate_trade(self, action, price, max_trades_per_epoch, max_fee_per_epoch, data=None, index=None, portfolio_tracker=None):
+    def _simulate_training(self, states, data):
+        """
+        Simulates training on the given states and data to prepare the model for validation.
+        Temporarily updates the model and portfolio, then restores the original state.
+        
+        Args:
+            states (np.array): Preprocessed states for training.
+            data (pd.DataFrame): Raw data with features (e.g., Close, ATR).
+        """
+        # Save current state to restore later
+        original_weights = self.model.get_weights()
+        original_portfolio = {
+            'cash': self.cash,
+            'shares': self.shares,
+            'cumulative_fees': self.cumulative_fees,
+            'fee_history': self.fee_history.copy(),
+            'portfolio_value_history': self.portfolio_value_history.copy(),
+            'returns': self.returns.copy(),
+            'trade_count': self.trade_count
+        }
+        original_memory = self.memory.copy()
+        original_epsilon = self.epsilon
+        original_temperature = self.temperature
+
+        # Reset portfolio for simulation
+        self.reset_portfolio()
+
+        # Simulate training loop
+        for t in range(self.lookback, len(data) - 1):
+            if t >= len(states) + self.lookback:
+                Utils.log_message(f"ERROR: Index t={t} exceeds preprocessed data length {len(states)}")
+                break
+
+            state = states[t - self.lookback]
+            action = self.act(state)  # Uses current exploration params
+            price = data['Close'].iloc[t]
+            prev_value = self.simulate_trade(action, price, data=data, index=t, max_trades_per_epoch=0, max_fee_per_epoch=0)
+
+            next_price = data['Close'].iloc[t + 1]
+            curr_value = self.simulate_trade(None, next_price, data=data, index=t+1, max_trades_per_epoch=0, max_fee_per_epoch=0)
+
+            reward, _ = Calculations.calculate_reward(
+                prev_value, curr_value, action, self.fee_history,
+                self.portfolio_value_history, data, t, self.initial_cash, self.returns
+            )
+            done = (t == len(data) - 2)
+
+            next_state = states[t - self.lookback + 1] if t < len(states) + self.lookback - 1 else states[-1]
+            self.remember(state, action, reward, next_state, done)
+            self.replay()
+
+        # Restore original state
+        self.model.set_weights(original_weights)
+        self.target_model.set_weights(original_weights)
+        self.cash = original_portfolio['cash']
+        self.shares = original_portfolio['shares']
+        self.cumulative_fees = original_portfolio['cumulative_fees']
+        self.fee_history = original_portfolio['fee_history']
+        self.portfolio_value_history = original_portfolio['portfolio_value_history']
+        self.returns = original_portfolio['returns']
+        self.trade_count = original_portfolio['trade_count']
+        self.memory = original_memory
+        self.epsilon = original_epsilon
+        self.temperature = original_temperature
+
+        Utils.log_message(f"INFO: Simulated training completed for {len(states)} states")
+
+    def simulate_trade_old(self, action, price, max_trades_per_epoch, max_fee_per_epoch, data=None, index=None, portfolio_tracker=None):
         if action is None:
             return self.get_portfolio_value(price)
         
@@ -663,6 +752,126 @@ class DQNAgent:
                         self.shares = portfolio_tracker.holdings.get(self.ticker, {'quantity': 0})['quantity']
                         self.trade_count += 1
                         Utils.log_message(f"INFO: Sell executed via PortfolioTracker: {self.shares} shares at {price}, fee: {fee_amount:.2f}, cumulative_fees: {self.cumulative_fees:.2f}, total_fees: {portfolio_tracker.total_fees:.2f}, transaction_id: {transaction_id}")
+                    else:
+                        Utils.log_message(f"INFO: Sell failed: {transaction_id}")
+                except Exception as e:
+                    Utils.log_message(f"ERROR: PortfolioTracker sell failed: {e}")
+                    return current_value
+            else:
+                Utils.log_message(f"INFO: Trade skipped: Action={action}, Cash={portfolio_tracker.cash}, Shares={self.shares}, Shares_to_buy={shares_to_buy}")
+
+        current_value = self.get_portfolio_value(price)
+        self.portfolio_value_history.append(current_value)
+        return current_value
+
+    def simulate_trade(self, action, price, max_trades_per_epoch, max_fee_per_epoch, data=None, index=None, portfolio_tracker=None):
+        if action is None:
+            return self.get_portfolio_value(price)
+        
+        if max_trades_per_epoch > 0 and self.trade_count >= max_trades_per_epoch:
+            Utils.log_message(f"INFO: Trade skipped: Maximum trades per epoch reached ({self.trade_count}/{max_trades_per_epoch})")
+            return self.get_portfolio_value(price)
+        if max_fee_per_epoch > 0 and self.cumulative_fees >= max_fee_per_epoch:
+            Utils.log_message(f"INFO: Trade skipped: Maximum fee per epoch reached ({self.cumulative_fees:.2f}/{max_fee_per_epoch})")
+            return self.get_portfolio_value(price)
+        
+        current_value = self.get_portfolio_value(price)
+        if current_value < self.initial_cash * 0.5:
+            Utils.log_message(f"INFO: Trade skipped: Portfolio value below 50% of initial cash")
+            return current_value
+        
+        atr = 0.02 * price
+        if data is not None and index is not None and 'ATR' in data.columns:
+            atr_value = data['ATR'].iloc[index]
+            atr = float(atr_value) if pd.notna(atr_value) else atr
+        
+        # Conservative position sizing
+        min_stop_loss = price * 0.01
+        stop_loss_distance = max(atr * self.atr_multiplier, min_stop_loss)
+        max_risk_amount = self.cash * self.risk_per_trade
+        buy_fee = self.trade_fee
+        sell_fee = self.trade_fee
+        fee_adjusted_price = price * (1 + buy_fee)
+        future_selling_fee = price * sell_fee
+        max_shares = np.floor(max_risk_amount / (stop_loss_distance + future_selling_fee))
+        max_shares_by_cash = np.floor((self.cash * 0.5) / fee_adjusted_price)
+        max_shares_by_portfolio = np.floor((current_value * 0.1) / fee_adjusted_price)  # Capped at 10%
+        shares_to_buy = max(min(max_shares, max_shares_by_cash, max_shares_by_portfolio), 1)
+        
+        Utils.log_message(f"INFO: Trade calc: price={price:.2f}, atr={atr:.4f}, stop_loss_distance={stop_loss_distance:.2f}, max_risk_amount={max_risk_amount:.2f}, max_shares={max_shares}, max_shares_by_cash={max_shares_by_cash}, max_shares_by_portfolio={max_shares_by_portfolio}, shares_to_buy={shares_to_buy}")
+        
+        if portfolio_tracker is None:
+            if action == 1:
+                cost_before_fees = shares_to_buy * price
+                fee_amount = cost_before_fees * buy_fee
+                total_cost = cost_before_fees + fee_amount
+                if self.cash >= total_cost and shares_to_buy > 0:
+                    if fee_amount < 0:
+                        Utils.log_message(f"ERROR: Negative fee amount: {fee_amount}")
+                        return current_value
+                    self.cumulative_fees += fee_amount
+                    self.fee_history.append(fee_amount)
+                    self.cash -= total_cost
+                    self.shares += shares_to_buy
+                    self.trade_count += 1
+                    Utils.log_message(f"INFO: Buy executed: {shares_to_buy} shares at {price}, fee: {fee_amount:.2f}, cumulative_fees: {self.cumulative_fees:.2f}")
+                else:
+                    Utils.log_message(f"INFO: Trade skipped: Insufficient cash ({self.cash:.2f} < {total_cost:.2f}) or invalid shares_to_buy")
+            elif action == 2 and self.shares > 0:
+                revenue_before_fees = self.shares * price
+                fee_amount = revenue_before_fees * sell_fee
+                if fee_amount < 0:
+                    Utils.log_message(f"ERROR: Negative fee amount: {fee_amount}")
+                    return current_value
+                net_revenue = revenue_before_fees - fee_amount
+                self.cumulative_fees += fee_amount
+                self.fee_history.append(fee_amount)
+                self.cash += net_revenue
+                self.shares = 0
+                self.trade_count += 1
+                Utils.log_message(f"INFO: Sell executed: {self.shares} shares at {price}, fee: {fee_amount:.2f}, cumulative_fees: {self.cumulative_fees:.2f}")
+            else:
+                Utils.log_message(f"INFO: Trade skipped: Action={action}, Cash={self.cash}, Shares={self.shares}, Shares_to_buy={shares_to_buy}")
+        else:
+            volume = data['Volume'].iloc[index] if data is not None and index is not None and 'Volume' in data.columns else None
+            if action == 1:
+                cost_before_fees = shares_to_buy * price
+                total_cost = cost_before_fees * (1 + buy_fee)
+                if portfolio_tracker.cash >= total_cost and shares_to_buy > 0:
+                    try:
+                        success, transaction_id = portfolio_tracker.buy(self.ticker, shares_to_buy, price, fee_percentage=buy_fee, volume=volume)
+                        if success:
+                            fee_amount = portfolio_tracker.transactions[-1]['fee']
+                            if fee_amount < 0:
+                                Utils.log_message(f"ERROR: Negative fee amount: {fee_amount}")
+                                return current_value
+                            self.cumulative_fees += fee_amount
+                            self.fee_history.append(fee_amount)
+                            self.cash = portfolio_tracker.cash
+                            self.shares = portfolio_tracker.holdings.get(self.ticker, {'quantity': 0})['quantity']
+                            self.trade_count += 1
+                            Utils.log_message(f"INFO: Buy executed via PortfolioTracker: {shares_to_buy} shares at {price}, fee: {fee_amount:.2f}, cumulative_fees: {self.cumulative_fees:.2f}, transaction_id: {transaction_id}")
+                        else:
+                            Utils.log_message(f"INFO: Buy failed: {transaction_id}")
+                    except Exception as e:
+                        Utils.log_message(f"ERROR: PortfolioTracker buy failed: {e}")
+                        return current_value
+                else:
+                    Utils.log_message(f"INFO: Trade skipped: Insufficient cash ({portfolio_tracker.cash:.2f} < {total_cost:.2f}) or invalid shares_to_buy")
+            elif action == 2 and self.shares > 0:
+                try:
+                    success, transaction_id = portfolio_tracker.sell(self.ticker, self.shares, price, fee_percentage=sell_fee, volume=volume)
+                    if success:
+                        fee_amount = portfolio_tracker.transactions[-1]['fee']
+                        if fee_amount < 0:
+                            Utils.log_message(f"ERROR: Negative fee amount: {fee_amount}")
+                            return current_value
+                        self.cumulative_fees += fee_amount
+                        self.fee_history.append(fee_amount)
+                        self.cash = portfolio_tracker.cash
+                        self.shares = portfolio_tracker.holdings.get(self.ticker, {'quantity': 0})['quantity']
+                        self.trade_count += 1
+                        Utils.log_message(f"INFO: Sell executed via PortfolioTracker: {self.shares} shares at {price}, fee: {fee_amount:.2f}, cumulative_fees: {self.cumulative_fees:.2f}, transaction_id: {transaction_id}")
                     else:
                         Utils.log_message(f"INFO: Sell failed: {transaction_id}")
                 except Exception as e:

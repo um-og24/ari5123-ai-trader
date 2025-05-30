@@ -1,13 +1,31 @@
-# ARI5123-AI-Trader
+# ARI5123 - Ensemble DQN+RF Trading System
 
-python3 -m venv .venv
+## Overview
+This repository contains the Python implementation of an ensemble DQN+RF trading system for AAPL stock, as described in the ARI5123 Assignment 2 paper.
 
-source .venv\bin\activate # For Linux
+## Virtual Environment Recommended (Python 3.12.3)
+Create via: `python3 -m venv .venv`
+Activate via (Linux): `source .venv\bin\activate`
+Activate via (Windows): `source .venv\Source\activate`
+Upgrade pip with: `pip install --upgrade pip`
 
--- source .venv\Source\activate # For Windows
+## Dependencies
+Install via: `pip install -r requirements.txt`
 
-pip install --upgrade pip
+## Execution
+Run the Streamlit app: `streamlit run src/main.py`
+Access the interface at `http://localhost:8501`.
 
-pip install -r requirements.txt
+## Structure
+- `main.py`: Streamlit app entry point.
+- `ensemble_agent.py`: Ensemble DQN+RF logic.
+- `dqn_agent.py`: DQN implementation.
+- `rf_agent.py`: RF implementation.
+- `portfolio_tracker.py`: Portfolio management.
+- `calculations.py`: Metrics and indicators.
+- `utils.py`: Data preprocessing.
+- `overview_ui.py`, `chart_builder.py`, etc.: UI components.
 
-streamlit run src/main.py
+## Data
+Use AAPL training data from 2017-01-01 – 2022-12-31
+Live Trading Simulation use AAPL form 2023-01-01 - 2025-05-25

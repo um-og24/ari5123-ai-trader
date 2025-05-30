@@ -16,6 +16,9 @@ from itertools import product
 from calculations import Calculations
 from utils import Utils, FEATURE_COLUMNS
 
+# Set seeds for reproducibility
+np.random.seed(42)
+
 class RFAgent:
     def __init__(self, ticker, training_start_date, training_end_date, model_dir, lookback, trade_fee, use_smote, expected_feature_columns=FEATURE_COLUMNS):
         self.ticker = ticker
@@ -504,7 +507,7 @@ class RFAgent:
                 callback(
                     progress,
                     params=params,
-                    mean_cv_score=cv_score,
+                    mean_cv_score=val_score,
                     best_params=self.best_params,
                     best_score=self.best_score,
                     training_phase="rf",

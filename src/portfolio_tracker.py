@@ -30,7 +30,7 @@ class PortfolioTracker:
         self._add_history_point(None, None)
 
 
-    def buy(self, ticker, quantity, price, fee_percentage=0.001, timestamp=None):
+    def buy_old(self, ticker, quantity, price, fee_percentage=0.001, timestamp=None):
         cost = quantity * price
         cost = float(cost)  # Convert to Python float if needed
         
@@ -81,7 +81,7 @@ class PortfolioTracker:
         
         return True, transaction_id
 
-    def sell(self, ticker, quantity, price, fee_percentage=0.001, timestamp=None):
+    def sell_old(self, ticker, quantity, price, fee_percentage=0.001, timestamp=None):
         if ticker not in self.holdings or self.holdings[ticker]['quantity'] < quantity:
             return False, "Insufficient holdings"
         
@@ -128,6 +128,123 @@ class PortfolioTracker:
         
         return True, transaction_id
 
+
+    def buy(self, ticker, quantity, price, fee_percentage=0.001, timestamp=None, volume=None):
+        # Calculate slippage (0.1% base + volume-based adjustment)
+        slippage_factor = 0.001  # Base 0.1%
+        if volume is not None and volume > 0:
+            trade_size = quantity * price
+            volume_impact = trade_size / (volume + 1e-8)  # Relative trade size
+            slippage_factor += min(0.005, volume_impact * 0.1)  # Cap additional slippage at 0.5%
+        adjusted_price = price * (1 + slippage_factor)
+        
+        cost = quantity * adjusted_price
+        cost = float(cost)
+        
+        # Calculate fee
+        fee_amount = cost * fee_percentage
+        total_cost = cost + fee_amount
+        
+        if total_cost > self.cash:
+            return False, "Insufficient funds"
+        
+        transaction_id = str(uuid.uuid4())[:8]
+        
+        # Update holdings
+        if ticker in self.holdings:
+            total_shares = self.holdings[ticker]['quantity'] + quantity
+            total_cost_basis = (self.holdings[ticker]['quantity'] * self.holdings[ticker]['avg_price']) + cost
+            self.holdings[ticker]['avg_price'] = total_cost_basis / total_shares if total_shares > 0.0 else 0.0
+            self.holdings[ticker]['quantity'] = total_shares
+        else:
+            self.holdings[ticker] = {
+                'quantity': quantity,
+                'avg_price': adjusted_price  # Use adjusted price for cost basis
+            }
+        
+        # Update cash, position value, and fees
+        self.cash -= total_cost
+        self.current_position_value += cost
+        self.total_fees += fee_amount
+        
+        # Record transaction
+        self.transactions.append({
+            'id': transaction_id,
+            'timestamp': timestamp if timestamp is not None else datetime.now(),
+            'ticker': ticker,
+            'action': 'Buy',
+            'quantity': quantity,
+            'price': adjusted_price,  # Record adjusted price
+            'slippage': adjusted_price - price,  # Log slippage
+            'cost': cost,
+            'fee': fee_amount,
+            'total_cost': total_cost,
+            'fee_percentage': fee_percentage * 100,
+            'remaining_cash': self.cash
+        })
+        
+        # Update history
+        self._add_history_point('Buy', adjusted_price, timestamp)
+        Utils.log_message(f"INFO: Buy executed: {quantity} shares of {ticker} at €{adjusted_price:.2f}, slippage: €{(adjusted_price - price):.4f}, fee: €{fee_amount:.2f}")
+        
+        return True, transaction_id
+
+    def sell(self, ticker, quantity, price, fee_percentage=0.001, timestamp=None, volume=None):
+        if ticker not in self.holdings or self.holdings[ticker]['quantity'] < quantity:
+            return False, "Insufficient holdings"
+        
+        # Calculate slippage (0.1% base + volume-based adjustment)
+        slippage_factor = 0.001  # Base 0.1%
+        if volume is not None and volume > 0:
+            trade_size = quantity * price
+            volume_impact = trade_size / (volume + 1e-8)
+            slippage_factor += min(0.005, volume_impact * 0.1)
+        adjusted_price = price * (1 - slippage_factor)  # Sell at lower price due to slippage
+        
+        transaction_id = str(uuid.uuid4())[:8]
+        gross_revenue = quantity * adjusted_price
+        
+        # Calculate fee
+        fee_amount = gross_revenue * fee_percentage
+        net_revenue = gross_revenue - fee_amount
+        
+        # Calculate realized profit/loss
+        avg_price = self.holdings[ticker]['avg_price']
+        transaction_pnl = (adjusted_price - avg_price) * quantity - fee_amount
+        
+        # Update holdings
+        self.holdings[ticker]['quantity'] -= quantity
+        if self.holdings[ticker]['quantity'] == 0:
+            del self.holdings[ticker]
+        
+        # Update cash, position value, fees, and P&L
+        self.cash += net_revenue
+        self.current_position_value -= (avg_price * quantity)
+        self.realized_pnl += transaction_pnl
+        self.total_fees += fee_amount
+        
+        # Record transaction
+        self.transactions.append({
+            'id': transaction_id,
+            'timestamp': timestamp if timestamp is not None else datetime.now(),
+            'ticker': ticker,
+            'action': 'Sell',
+            'quantity': quantity,
+            'price': adjusted_price,  # Record adjusted price
+            'slippage': price - adjusted_price,  # Log slippage
+            'gross_revenue': gross_revenue,
+            'fee': fee_amount,
+            'net_revenue': net_revenue,
+            'fee_percentage': fee_percentage * 100,
+            'pnl': transaction_pnl,
+            'remaining_cash': self.cash
+        })
+        
+        # Update history
+        self._add_history_point('Sell', adjusted_price, timestamp)
+        Utils.log_message(f"INFO: Sell executed: {quantity} shares of {ticker} at €{adjusted_price:.2f}, slippage: €{(price - adjusted_price):.4f}, fee: €{fee_amount:.2f}, P&L: €{transaction_pnl:.2f}")
+        
+        return True, transaction_id
 
     def _add_history_point(self, action, ticker_price, timestamp=None):
         timestamp = timestamp if timestamp is not None else datetime.now()

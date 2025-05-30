@@ -10,7 +10,10 @@ from calculations import Calculations
 from chart_builder import ChartBuilder
 from utils import Utils, SETTING_KEYS
 
-def _execute_trade(agent, settings, portfolio, action, current_price, timestamp, q_values, dqn_action, rf_action):
+# Set seeds for reproducibility
+np.random.seed(42)
+
+def _execute_trade_old(agent, settings, portfolio, action, current_price, timestamp, q_values, dqn_action, rf_action):
     current_price = float(current_price.iloc[0]) if hasattr(current_price, 'iloc') else float(current_price)
     transaction_icons=["✅", "🚫", "❌", "🕔"]
     transaction_message = ""
@@ -100,6 +103,96 @@ def _execute_trade(agent, settings, portfolio, action, current_price, timestamp,
     Utils.log_message(f"INFO: Action={action}, DQN={dqn_action}, RF={rf_action}, Recent Actions={st.session_state.recent_actions}, Cash={portfolio.cash}, Min Trade Cost={min_trade_cost}, Fee={fee_amount}")
     return transaction_message, transaction_icon
 
+def _execute_trade(agent, settings, portfolio, action, current_price, timestamp, q_values, dqn_action, rf_action):
+    current_price = float(current_price.iloc[0]) if hasattr(current_price, 'iloc') else float(current_price)
+    transaction_icons=["✅", "🚫", "❌", "🕔"]
+    transaction_message = ""
+    transaction_icon=""
+    fee_amount = 0.0
+    slippage_amount = 0.0
+    min_trade_cost = current_price * (1 + settings['trade_fee'])
+    
+    Utils.log_message(f"DEBUG: Ensemble Action: {action}, type: {type(action)} | DQN Action: {dqn_action}, type: {type(dqn_action)} | RF Action: {rf_action}, type: {type(rf_action)}")
+    
+    if action == 1 and portfolio.cash < min_trade_cost:
+        return "BUY SKIPPED: Insufficient capital to execute trades", transaction_icons[1]
+    
+    confirmation_steps = min(settings['confirmation_steps'], 2)  # Cap at 2 for responsiveness
+    recent_actions = st.session_state.recent_actions
+    if len(recent_actions) >= confirmation_steps and all(a == action for a in recent_actions[-confirmation_steps:]) and action in [1, 2]:
+        if action == 1:
+            atr = 0.02 * current_price
+            if 'ATR' in agent.trading_data.columns and st.session_state.current_index < len(agent.trading_data):
+                atr_value = agent.trading_data['ATR'].iloc[st.session_state.current_index]
+                atr = float(atr_value) if pd.notna(atr_value) else atr
+            
+            stop_loss_distance = max(atr * settings['atr_multiplier'], 1.0)
+            max_risk_amount = portfolio.cash * settings['risk_per_trade']
+            shares_to_buy = max(int(max_risk_amount / stop_loss_distance), 1)
+            max_shares_by_cash = int(portfolio.cash / (current_price * (1 + settings['trade_fee'])))
+            shares_to_buy = min(shares_to_buy, max_shares_by_cash)
+            if shares_to_buy > 0:
+                volume = agent.trading_data['Volume'].iloc[st.session_state.current_index] if 'Volume' in agent.trading_data.columns else None
+                success, result = portfolio.buy(settings['ticker'], shares_to_buy, current_price, fee_percentage=settings['trade_fee'], timestamp=timestamp, volume=volume)
+                if success:
+                    if portfolio.transactions:
+                        fee_amount = portfolio.transactions[-1]['fee']
+                        slippage_amount = portfolio.transactions[-1]['slippage']
+                    transaction_message = f"BUY FILLED: {shares_to_buy} shares of {settings['ticker']} at €{current_price:.2f}, fee: €{fee_amount:.2f}, slippage: €{slippage_amount:.4f} (ID: {result})"
+                    transaction_icon=transaction_icons[0]
+                    st.session_state.last_trade_id = result
+                else:
+                    transaction_message = f"BUY FAILED: {result}"
+                    transaction_icon=transaction_icons[2]
+            else:
+                transaction_message = "BUY SKIPPED: Insufficient funds or position size too small"
+                transaction_icon=transaction_icons[1]
+        elif action == 2:
+            if settings['ticker'] in portfolio.holdings and portfolio.holdings[settings['ticker']]['quantity'] > 0:
+                shares_to_sell = portfolio.holdings[settings['ticker']]['quantity']
+                volume = agent.trading_data['Volume'].iloc[st.session_state.current_index] if 'Volume' in agent.trading_data.columns else None
+                success, result = portfolio.sell(settings['ticker'], shares_to_sell, current_price, fee_percentage=settings['trade_fee'], timestamp=timestamp, volume=volume)
+                if success:
+                    if portfolio.transactions:
+                        fee_amount = portfolio.transactions[-1]['fee']
+                        slippage_amount = portfolio.transactions[-1]['slippage']
+                    transaction_message = f"SELL FILLED: {shares_to_sell} shares of {settings['ticker']} at €{current_price:.2f}, fee: €{fee_amount:.2f}, slippage: €{slippage_amount:.4f} (ID: {result})"
+                    transaction_icon=transaction_icons[0]
+                    st.session_state.last_trade_id = result
+                else:
+                    transaction_message = f"SELL FAILED: {result}"
+                    transaction_icon=transaction_icons[2]
+            else:
+                transaction_message = "SELL SKIPPED: No shares to sell"
+                transaction_icon=transaction_icons[1]
+        if transaction_message and "SKIPPED" not in transaction_message and "FAILED" not in transaction_message:
+            st.session_state.recent_actions = []
+    elif action in [1, 2]:
+        transaction_message = f"ACTION SKIPPED: Waiting for {confirmation_steps} consecutive {'Buy' if action == 1 else 'Sell'} signals (Current: {len(recent_actions) + 1})"
+        transaction_icon=transaction_icons[3]
+
+    if dqn_action != rf_action:
+        Utils.log_message(f"INFO: Ensemble chose action {action} from DQN={dqn_action} and RF={rf_action}")
+
+    if transaction_message:
+        st.session_state.trade_log.append({
+            "Time": timestamp,
+            "Action": "Buy" if action == 1 else "Sell" if action == 2 else "Hold",
+            "DQN Action": int(dqn_action),
+            "RF Action": int(rf_action),
+            "Price": round(current_price, 2),
+            "Quantity": locals().get('shares_to_buy', 0) if action == 1 else locals().get('shares_to_sell', 0) if action == 2 else 0,
+            "Value": round(locals().get('shares_to_buy', 0) * current_price, 2) if action == 1 else round(locals().get('shares_to_sell', 0) * current_price, 2) if action == 2 else 0,
+            "Transaction": transaction_message,
+            "Portfolio Value": round(portfolio.cash + portfolio.current_position_value, 2),
+            "Fee": round(fee_amount, 2),
+            "Slippage": round(slippage_amount, 4),  # Add slippage to trade log
+            "Q-Hold": round(q_values[0], 2),
+            "Q-Buy": round(q_values[1], 2),
+            "Q-Sell": round(q_values[2], 2)
+        })
+    Utils.log_message(f"INFO: Action={action}, DQN={dqn_action}, RF={rf_action}, Recent Actions={st.session_state.recent_actions}, Cash={portfolio.cash}, Min Trade Cost={min_trade_cost}, Fee={fee_amount}, Slippage={slippage_amount}")
+    return transaction_message, transaction_icon
 
 def render_live_trading(agent, settings):
     cols = st.columns([2, 3])

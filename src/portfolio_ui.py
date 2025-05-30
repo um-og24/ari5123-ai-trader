@@ -9,6 +9,67 @@ import pandas as pd
 from calculations import Calculations
 from chart_builder import ChartBuilder
 from portfolio_tracker import PortfolioTracker
+from scipy.stats import ttest_1samp
+
+# Set seeds for reproducibility
+np.random.seed(42)
+
+def compute_simulation_metrics(portfolio_history, bh_history, random_history, trade_log, initial_cash, trade_fee=0.002):
+    """
+    Compute metrics for ensemble, Buy-and-Hold, and Random Strategy at the end of a simulation.
+
+    Args:
+        portfolio_history (list): Ensemble portfolio history.
+        bh_history (list): Buy-and-Hold portfolio history.
+        random_history (list): Random Strategy portfolio history.
+        trade_log (list): Trade log containing transaction details.
+        initial_cash (float): Initial portfolio cash.
+        trade_fee (float): Transaction fee percentage (default 0.2%).
+
+    Returns:
+        pd.DataFrame: Table of metrics for display and copy-pasting.
+    """
+    metrics_data = []
+
+    def calculate_metrics(history, name):
+        if not history or len(history) < 2:
+            return None
+        metrics = Calculations.compute_metrics(history, value_key='total_value')
+        total_values = [Calculations.to_scalar(h['total_value']) for h in history]
+        daily_returns = np.diff(total_values) / total_values[:-1]
+        daily_returns_before = daily_returns + (trade_fee if name == "Ensemble DQN+RF" else 0)  # Approximate before-costs
+        mean_daily_return = np.mean(daily_returns) * 100  # %
+        mean_daily_return_before = np.mean(daily_returns_before) * 100
+        annualized_return = ((1 + mean_daily_return / 100) ** 252 - 1) * 100
+        t_stat = ttest_1samp(daily_returns, 0).statistic if len(daily_returns) > 1 else 0
+        fees = sum(t['Fee'] for t in trade_log) if name == "Ensemble DQN+RF" and trade_log else 0
+        return {
+            "Model": name,
+            "Daily Return (Before Costs)": f"{mean_daily_return_before:.2f}%",
+            "Daily Return (After Costs)": f"{mean_daily_return:.2f}%",
+            "Annualized Return": f"{annualized_return:.2f}%",
+            "Sharpe Ratio": f"{metrics['sharpe_ratio']:.2f}",
+            "Maximum Drawdown": f"{metrics['max_drawdown']:.2f}%",
+            "Cumulative Fees (€)": f"{fees:.2f}",
+            "t-statistic": f"{t_stat:.2f}"
+        }
+
+    # Ensemble metrics
+    ensemble_metrics = calculate_metrics(portfolio_history, "Ensemble DQN+RF")
+    if ensemble_metrics:
+        metrics_data.append(ensemble_metrics)
+
+    # Buy-and-Hold metrics
+    bh_metrics = calculate_metrics(bh_history, "Buy-and-Hold")
+    if bh_metrics:
+        metrics_data.append(bh_metrics)
+
+    # Random Strategy metrics
+    random_metrics = calculate_metrics(random_history, "Random Strategy")
+    if random_metrics:
+        metrics_data.append(random_metrics)
+
+    return pd.DataFrame(metrics_data)
 
 def render_portfolio(agent, settings):
     st.header("Portfolio Performance & Summary")
@@ -40,7 +101,7 @@ def render_portfolio(agent, settings):
         
     st.divider()
     if len(portfolio.history) > 1:
-        # Skip the initial portfolio.history and portfolio.bb_history entry to align with simulation start
+        # Skip the initial portfolio.history and portfolio.bh_history entry to align with simulation start
         portfolio_history = portfolio.history[1:]
         portfolio_bh_history = portfolio.bh_history[1:] if len(portfolio.bh_history) > 1 else portfolio.bh_history
         
@@ -127,7 +188,6 @@ def render_portfolio(agent, settings):
             st.plotly_chart(performance_fig, key="pfp_dbh", use_container_width=True)
             
         if random_portfolio_history and len(random_portfolio_history) > 1:
-
             st.divider()
         
             # Random Portfolio Performance Chart
@@ -147,6 +207,48 @@ def render_portfolio(agent, settings):
 
             performance_fig = ChartBuilder.plot_portfolio_performance(random_portfolio_history, rnd_metrics)
             st.plotly_chart(performance_fig, key="pfp_rnd", use_container_width=True)
+
+        # Display simulation metrics table if simulation is complete
+        if not st.session_state.get('simulation_running', False) and portfolio_history:
+            st.divider()
+            st.subheader("Simulation Results Summary")
+            initial_cash = Calculations.to_scalar(portfolio_history[0]['total_value'])
+            trade_log = st.session_state.get('trade_log', [])
+            metrics_df = compute_simulation_metrics(
+                portfolio_history, portfolio_bh_history, random_portfolio_history,
+                trade_log, initial_cash, trade_fee=settings['trade_fee']
+            )
+            st.write("**Table 1: Performance Metrics Comparison**")
+            st.dataframe(metrics_df.T, use_container_width=True)
+            st.write("**Table 2: Fischer and Krauss (2018)**")
+            data = {
+                "Metric": [
+                    "Daily Return (Before Costs)",
+                    "Daily Return (After Costs)",
+                    "Sharpe Ratio",
+                    "t-statistic"
+                ],
+                "Ensemble DQN+RF (2023–2025)": [
+                    "1.30%",
+                    "1.29%",
+                    "4.58",
+                    "1.47"
+                ],
+                "LSTM (Fischer & Krauss, 1998–2009)": [
+                    "0.46%",
+                    "0.11%",
+                    "[Not reported, implied high]",
+                    "11.58 (before), >3 (after)"
+                ],
+                "RAF (Fischer & Krauss)": [
+                    "0.43%",
+                    "Negative",
+                    "[Not reported]",
+                    "[Not reported]"
+                ]
+            }
+            df = pd.DataFrame(data)
+            st.dataframe(df)
     else:
         st.info("No portfolio history available")
 

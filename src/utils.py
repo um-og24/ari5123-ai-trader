@@ -10,6 +10,9 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 
+# Set seeds for reproducibility
+np.random.seed(42)
+
 LOG_FILE_PATH = "system_logs/system_log.txt"
 
 def _init_logger():
@@ -26,12 +29,12 @@ def _init_logger():
 logger = _init_logger()
 
 REQUIRED_DATA_COLUMNS=['Open', 'High', 'Low', 'Close', 'Volume'] # OHLCV Features
-FEATURE_COLUMNS=REQUIRED_DATA_COLUMNS + ['RSI', 'SMA20', 'MACD', 'BB_Upper', 'BB_Lower', 'BB', 'BB_Penetration',
+FEATURE_COLUMNS=REQUIRED_DATA_COLUMNS + ['RSI', 'SMA20',  'SMA70', 'MACD', 'BB_Upper', 'BB_Lower', 'BB', 'BB_Penetration',
                 'ATR', 'Returns', 'Volatility', 'RSI_Slope', 'Price_Slope', 'RSI_Divergence',
                 'Lag1_Return', 'Lag3_Return', 'Lag5_Return', 'Skewness', 'Kurtosis']
 
 SETTING_KEYS=['ticker', 'training_start_date', 'training_end_date', 'model_dir', 'capital_type', 'initial_cash', 'reference_capital', 'capital_percentage',
-            'trade_fee', 'lookback', 'risk_per_trade', 'epochs', 'max_trades_per_epoch', 'max_fee_per_epoch', 'confirmation_steps',
+            'trade_fee', 'lookback', 'batch_size', 'risk_per_trade', 'epochs', 'max_trades_per_epoch', 'max_fee_per_epoch', 'confirmation_steps',
             'dqn_weight_scale', 'atr_multiplier', 'atr_period', 'atr_smoothing', 'use_smote']
 
 LOG_LEVEL_METHODS = {
@@ -55,7 +58,7 @@ class Utils:
     """Centralized class for utility functions."""
     
     @staticmethod
-    def preprocess_data(df, required_columns=REQUIRED_DATA_COLUMNS, rsi_period=14, macd_params=(12, 26, 9), bb_window=20, volatility_period=14, atr_smoothing=True, rsi_divergence_params={'diff_period': 3, 'smooth_period': 5, 'rsi_threshold': -0.1}):
+    def preprocess_data_old(df, required_columns=REQUIRED_DATA_COLUMNS, rsi_period=14, macd_params=(12, 26, 9), bb_window=20, volatility_period=14, atr_smoothing=True, rsi_divergence_params={'diff_period': 3, 'smooth_period': 5, 'rsi_threshold': -0.1}):
         """
         Preprocess financial data by adding technical indicators and volatility features.
 
@@ -147,6 +150,7 @@ class Utils:
             # Add technical indicators
             data['RSI'] = Calculations.compute_rsi(data['Close'], rsi_period)
             data['SMA20'] = data['Close'].rolling(window=20, min_periods=1).mean()
+            data['SMA70'] = data['Close'].rolling(window=70, min_periods=1).mean()
             data['MACD'] = Calculations.compute_macd(data['Close'], macd_params)
             data['BB_Upper'], data['BB_Lower'], data['BB'] = Calculations.compute_bollinger_band(data['Close'], bb_window)
             data['BB_Penetration'] = np.select(
@@ -194,6 +198,113 @@ class Utils:
         except Exception as e:
             Utils.log_message(f"ERROR: Error preprocessing data: {e}")
             raise RuntimeError(f"Error preprocessing data: {e}")
+
+    @staticmethod
+    def preprocess_data(df, required_columns=REQUIRED_DATA_COLUMNS, rsi_period=14, macd_params=(12, 26, 9), bb_window=20, volatility_period=14, atr_smoothing=True, rsi_divergence_params={'diff_period': 3, 'smooth_period': 5, 'rsi_threshold': -0.1}):
+        """
+        Preprocess financial data by adding technical indicators incrementally to avoid look-ahead bias.
+
+        Args:
+            df (pd.DataFrame): Input DataFrame with required columns.
+            required_columns (list[str]): List of required columns.
+            rsi_period (int): Period for RSI calculation.
+            macd_params (tuple): MACD parameters (short_ema, long_ema, signal_ema).
+            bb_window (int): Window for Bollinger Bands and SMA.
+            volatility_period (int): Period for volatility and ATR.
+            atr_smoothing (bool): Use EMA for ATR if True.
+            rsi_divergence_params (dict): RSI divergence parameters.
+
+        Returns:
+            pd.DataFrame: Preprocessed DataFrame with indicators.
+        """
+        from calculations import Calculations
+        try:
+            if not isinstance(df, pd.DataFrame):
+                Utils.log_message(f"ERROR: Input is not a pandas DataFrame: type={type(df)}")
+                raise ValueError(f"Input must be a pandas DataFrame, got {type(df)}")
+
+            Utils.log_message(f"DEBUG: Input DataFrame shape: {df.shape}, columns: {df.columns.tolist()}")
+
+            if isinstance(df.columns, pd.MultiIndex):
+                ticker = df.columns[0][1] if len(df.columns) > 0 else None
+                if ticker:
+                    try:
+                        df = df.xs(ticker, level=1, axis=1)
+                        df.columns = [col.split()[-1] for col in df.columns]
+                    except KeyError:
+                        Utils.log_message(f"ERROR: Ticker {ticker} not found in MultiIndex columns")
+                        raise ValueError(f"Cannot extract ticker {ticker} from MultiIndex columns")
+                else:
+                    Utils.log_message(f"ERROR: Cannot determine ticker from MultiIndex columns")
+                    raise ValueError("MultiIndex columns detected, but no ticker found")
+
+            missing_cols = [col for col in required_columns if col not in df.columns]
+            if missing_cols:
+                Utils.log_message(f"ERROR: Missing required columns: {missing_cols}")
+                raise ValueError(f"Missing required columns: {missing_cols}")
+
+            for col in required_columns:
+                series = df[col]
+                if not isinstance(series, pd.Series):
+                    Utils.log_message(f"ERROR: Column {col} did not return a Series: type={type(series)}")
+                    raise ValueError(f"Column {col} must be a pandas Series, got {type(series)}")
+                if not pd.api.types.is_numeric_dtype(series):
+                    Utils.log_message(f"ERROR: Column {col} is not numeric: dtype={series.dtype}")
+                    raise ValueError(f"Column {col} must be numeric, got dtype {series.dtype}")
+
+            if not df.index.is_monotonic_increasing:
+                Utils.log_message(f"WARNING: Data index is not monotonic; sorting by index")
+                df = df.sort_index()
+
+            data = df[required_columns].copy()
+
+            # Incremental indicator calculation to avoid look-ahead bias
+            def compute_rolling_indicators(window_data):
+                temp_data = window_data.copy()
+                temp_data['RSI'] = Calculations.compute_rsi(temp_data['Close'], rsi_period).iloc[-1]
+                temp_data['SMA20'] = temp_data['Close'].rolling(window=20, min_periods=1).mean().iloc[-1]
+                temp_data['SMA70'] = temp_data['Close'].rolling(window=70, min_periods=1).mean().iloc[-1]
+                temp_data['MACD'] = Calculations.compute_macd(temp_data['Close'], macd_params).iloc[-1]
+                upper, lower, bb = Calculations.compute_bollinger_band(temp_data['Close'], bb_window)
+                temp_data['BB_Upper'] = upper.iloc[-1]
+                temp_data['BB_Lower'] = lower.iloc[-1]
+                temp_data['BB'] = bb.iloc[-1]
+                temp_data['BB_Penetration'] = 1 if temp_data['Close'].iloc[-1] > upper.iloc[-1] else -1 if temp_data['Close'].iloc[-1] < lower.iloc[-1] else 0
+                temp_data['ATR'] = Calculations.compute_atr(temp_data, period=volatility_period, smoothing=atr_smoothing).iloc[-1]
+                temp_data['Returns'] = temp_data['Close'].pct_change().iloc[-1]
+                temp_data['Volatility'] = temp_data['Close'].pct_change().rolling(window=volatility_period, min_periods=1).std().iloc[-1]
+                temp_data['RSI_Slope'] = temp_data['RSI'].diff(rsi_divergence_params['diff_period']).rolling(rsi_divergence_params['smooth_period']).mean().iloc[-1]
+                temp_data['Price_Slope'] = temp_data['Close'].diff(rsi_divergence_params['diff_period']).rolling(rsi_divergence_params['smooth_period']).mean().iloc[-1]
+                temp_data['RSI_Divergence'] = 1 if (temp_data['Price_Slope'].iloc[-1] > 0 and temp_data['RSI_Slope'].iloc[-1] < rsi_divergence_params['rsi_threshold']) else -1 if (temp_data['Price_Slope'].iloc[-1] < 0 and temp_data['RSI_Slope'].iloc[-1] > -rsi_divergence_params['rsi_threshold']) else 0
+                temp_data['Lag1_Return'] = temp_data['Close'].pct_change(1).iloc[-1]
+                temp_data['Lag3_Return'] = temp_data['Close'].pct_change(3).iloc[-1]
+                temp_data['Lag5_Return'] = temp_data['Close'].pct_change(5).iloc[-1]
+                temp_data['Skewness'] = temp_data['Returns'].rolling(window=20, min_periods=1).skew().iloc[-1]
+                temp_data['Kurtosis'] = temp_data['Returns'].rolling(window=20, min_periods=1).kurt().iloc[-1]
+                return temp_data.iloc[-1][FEATURE_COLUMNS]
+
+            # Apply indicators row by row for each window
+            processed_data = []
+            for i in range(len(data)):
+                window = data.iloc[max(0, i - max(70, rsi_period, bb_window, volatility_period)):i + 1]
+                if len(window) >= min(rsi_period, bb_window, volatility_period):
+                    processed_row = compute_rolling_indicators(window)
+                    processed_data.append(processed_row)
+            
+            data = pd.DataFrame(processed_data, index=data.index[-len(processed_data):])
+
+            Utils.log_message(f"INFO: Input data: {len(df)} rows")
+            data = data[FEATURE_COLUMNS]
+            data = data.dropna()
+
+            Utils.log_message(f"INFO: Preprocessed data: {len(data)} rows, columns: {data.columns.tolist()}")
+
+            return data
+        except Exception as e:
+            Utils.log_message(f"ERROR: Error preprocessing data: {e}")
+            raise RuntimeError(f"Error preprocessing data: {e}")
+
+
 
     @staticmethod
     def display_action(action, q_values, placeholder):
@@ -296,6 +407,7 @@ class Utils:
 
     @staticmethod
     def fetch_data(ticker, start_date, end_date):
+        import os
         from datetime import datetime
         current_date = datetime.now().date()
 
@@ -322,7 +434,6 @@ class Utils:
             return pd.DataFrame()
 
         def get_from_local(ticker, start_date, end_date):
-            import os
             data_dir = "data"
             os.makedirs(data_dir, exist_ok=True)
 
@@ -330,8 +441,22 @@ class Utils:
             filename = f"{ticker}_{start_date}_{end_date}.csv"
             full_path = os.path.join(data_dir, filename)
             if os.path.exists(full_path):
-                Utils.log_message(f"INFO: Loading data from cache: {full_path}")
-                return pd.read_csv(full_path, index_col=0, parse_dates=True)
+                try:
+                    df = pd.read_csv(full_path, index_col=0, parse_dates=True)
+                    # Validate required columns
+                    if df.empty or not all(col in df.columns for col in REQUIRED_DATA_COLUMNS):
+                        Utils.log_message(f"WARNING: Cached file {full_path} is empty or missing required columns {REQUIRED_DATA_COLUMNS}; ignoring")
+                        return None
+                    # Ensure no MultiIndex remnants
+                    if isinstance(df.columns, pd.MultiIndex):
+                        Utils.log_message(f"WARNING: Cached file {full_path} has MultiIndex columns; attempting to normalize")
+                        df = df.xs(ticker, level=1, axis=1, drop_level=True) if ticker in df.columns.levels[1] else df
+                        df.columns = [col.split()[-1] for col in df.columns]
+                    Utils.log_message(f"INFO: Loading data from cache: {full_path}")
+                    return df
+                except Exception as e:
+                    Utils.log_message(f"ERROR: Failed to load cached file {full_path}: {e}")
+                    return None
 
             # Check if any existing file fully contains the range
             for file in os.listdir(data_dir):
@@ -342,8 +467,16 @@ class Utils:
                     file_start = pd.to_datetime(parts[1]).date()
                     file_end = pd.to_datetime(parts[2]).date()
                     if file_start <= start_date and file_end >= end_date:
+                        full_path = os.path.join(data_dir, file)
+                        df = pd.read_csv(full_path, index_col=0, parse_dates=True)
+                        if df.empty or not all(col in df.columns for col in REQUIRED_DATA_COLUMNS):
+                            Utils.log_message(f"WARNING: Broader cached file {full_path} is empty or missing required columns; ignoring")
+                            continue
+                        if isinstance(df.columns, pd.MultiIndex):
+                            Utils.log_message(f"WARNING: Broader cached file {full_path} has MultiIndex columns; attempting to normalize")
+                            df = df.xs(ticker, level=1, axis=1, drop_level=True) if ticker in df.columns.levels[1] else df
+                            df.columns = [col.split()[-1] for col in df.columns]
                         Utils.log_message(f"INFO: Found broader cached data: {file}")
-                        df = pd.read_csv(os.path.join(data_dir, file), index_col=0, parse_dates=True)
                         df = df.loc[str(start_date):str(end_date)]
                         return df
                 except Exception:
@@ -356,7 +489,7 @@ class Utils:
 
             data = yf.download(ticker, start=start_date, end=end_date, progress=True, auto_adjust=False)
 
-            if data.empty:
+            if data is None or data.empty or len(data) == 0:
                 msg=f"ERROR: Data could not be obtained form yfinance for ticker {ticker} from {start_date} to {end_date}"
                 Utils.log_message(msg)
                 raise ValueError(msg)
@@ -367,22 +500,64 @@ class Utils:
             import pandas_datareader as pdr
             data = pdr.get_data_stooq(ticker, start=start_date, end=end_date)
 
-            if data.empty:
+            if data is None or data.empty or len(data) == 0:
                 msg=f"ERROR: Data could not be obtained from pandas_datareader for ticker {ticker} from {start_date} to {end_date}"
                 Utils.log_message(msg)
                 raise ValueError(msg)
 
             return data
 
+        def save_data_to_csv(data, ticker, start_date, end_date):
+            if data is None or data.empty or len(data) == 0:
+                Utils.log_message(f"ERROR: Attempted to save empty data for {ticker} from {start_date} to {end_date}")
+                return
+            # Normalize DataFrame structure
+            try:
+                # Handle MultiIndex columns (from Stooq)
+                if isinstance(data.columns, pd.MultiIndex):
+                    Utils.log_message(f"INFO: Normalizing MultiIndex columns for {ticker}")
+                    if ticker in data.columns.levels[1]:
+                        data = data.xs(ticker, level=1, axis=1, drop_level=True)
+                    else:
+                        # Flatten columns by taking the last part of the name
+                        data.columns = [col[-1] for col in data.columns]
+                # Ensure standard column names
+                data = data.rename(columns=lambda x: x.strip().capitalize())
+                # Select only required columns, dropping extras like 'Adj Close'
+                data = data[[col for col in REQUIRED_DATA_COLUMNS if col in data.columns]]
+                if not all(col in data.columns for col in REQUIRED_DATA_COLUMNS):
+                    Utils.log_message(f"ERROR: Normalized data for {ticker} missing required columns {REQUIRED_DATA_COLUMNS}")
+                    return
+                # Ensure Date is the index
+                if data.index.name != 'Date':
+                    if 'Date' in data.columns:
+                        data = data.set_index('Date')
+                    else:
+                        data.index.name = 'Date'
+                data.index = pd.to_datetime(data.index)
+            except Exception as e:
+                Utils.log_message(f"ERROR: Failed to normalize data for {ticker} before saving: {e}")
+                return
+            # Save to CSV
+            data_dir = "data"
+            os.makedirs(data_dir, exist_ok=True)
+            filename = f"{ticker}_{start_date}_{end_date}.csv"
+            full_path = os.path.join(data_dir, filename)
+            data.to_csv(full_path)
+            Utils.log_message(f"INFO: Saved data to {full_path}")
+
         try:
             data = get_from_local(ticker, start_date, end_date)
 
-            if data is None:
+            if data is None or data.empty or len(data) == 0:
                 data = Utils.perform_using_retries(lambda: download_from_pandas_datareader(ticker, start_date, end_date))
-
-            return data
         except:
-            return Utils.perform_using_retries(lambda: download_from_yfinance(ticker, start_date, end_date))
+            data = Utils.perform_using_retries(lambda: download_from_yfinance(ticker, start_date, end_date))
+
+        if data is not None and not data.empty:
+            save_data_to_csv(data, ticker, start_date, end_date)
+
+        return data
 
 
     @staticmethod
