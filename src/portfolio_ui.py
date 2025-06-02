@@ -37,6 +37,7 @@ def compute_simulation_metrics(portfolio_history, bh_history, random_history, tr
         metrics = Calculations.compute_metrics(history, value_key='total_value')
         total_values = [Calculations.to_scalar(h['total_value']) for h in history]
         daily_returns = np.diff(total_values) / total_values[:-1]
+        standard_deviation = np.std(daily_returns) * 100
         daily_returns_before = daily_returns + (trade_fee if name == "Ensemble DQN+RF" else 0)  # Approximate before-costs
         mean_daily_return = np.mean(daily_returns) * 100  # %
         mean_daily_return_before = np.mean(daily_returns_before) * 100
@@ -47,6 +48,7 @@ def compute_simulation_metrics(portfolio_history, bh_history, random_history, tr
             "Model": name,
             "Daily Return (Before Costs)": f"{mean_daily_return_before:.2f}%",
             "Daily Return (After Costs)": f"{mean_daily_return:.2f}%",
+            "Standard Deviation": f"{standard_deviation:.2f}%",
             "Annualized Return": f"{annualized_return:.2f}%",
             "Sharpe Ratio": f"{metrics['sharpe_ratio']:.2f}",
             "Maximum Drawdown": f"{metrics['max_drawdown']:.2f}%",
@@ -220,7 +222,29 @@ def render_portfolio(agent, settings):
             )
             st.write("**Table 1: Performance Metrics Comparison**")
             st.dataframe(metrics_df.T, use_container_width=True)
-            st.write("**Table 2: Fischer and Krauss (2018)**")
+            # Table 2: Fischer and Krauss (2018) Comparison
+            st.write("**Table 2: Comparison with Fischer and Krauss (2018)**")
+            # Compute dynamic metrics for Ensemble DQN+RF
+            portfolio_history = portfolio.history[1:]  # Skip initial entry
+            metrics_df = compute_simulation_metrics(
+                portfolio_history, portfolio.bh_history[1:], random_portfolio_history,
+                trade_log, initial_cash, trade_fee=settings['trade_fee']
+            )
+            # Extract ensemble metrics
+            ensemble_metrics = metrics_df[metrics_df['Model'] == 'Ensemble DQN+RF'].iloc[0] if not metrics_df.empty else {
+                'Daily Return (Before Costs)': '0.00%',
+                'Daily Return (After Costs)': '0.00%',
+                'Sharpe Ratio': '0.00',
+                't-statistic': '0.00'
+            }
+            # Format ensemble metrics for Table 2
+            ensemble_data = [
+                f"{float(ensemble_metrics['Daily Return (Before Costs)'].strip('%')):.2f}%",
+                f"{float(ensemble_metrics['Daily Return (After Costs)'].strip('%')):.2f}%",
+                f"{float(ensemble_metrics['Sharpe Ratio']):.2f}",
+                f"{float(ensemble_metrics['t-statistic']):.2f}"
+            ]
+            # Construct Table 2 with dynamic ensemble column
             data = {
                 "Metric": [
                     "Daily Return (Before Costs)",
@@ -228,12 +252,7 @@ def render_portfolio(agent, settings):
                     "Sharpe Ratio",
                     "t-statistic"
                 ],
-                "Ensemble DQN+RF (2023–2025)": [
-                    "1.30%",
-                    "1.29%",
-                    "4.58",
-                    "1.47"
-                ],
+                "Ensemble DQN+RF": ensemble_data,
                 "LSTM (Fischer & Krauss, 1998–2009)": [
                     "0.46%",
                     "0.11%",
@@ -248,7 +267,7 @@ def render_portfolio(agent, settings):
                 ]
             }
             df = pd.DataFrame(data)
-            st.dataframe(df)
+            st.dataframe(df, use_container_width=True)
     else:
         st.info("No portfolio history available")
 

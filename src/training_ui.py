@@ -45,6 +45,15 @@ def _inform_progress_callback(progress, params=None, mean_cv_score=None, best_pa
                     best_cols[4].metric("RF Best Max Features", best_params['max_features'])
                     best_cols[5].metric("RF Best Accuracy Score", f"{best_score:.4f}", delta=f"{(best_score - mean_cv_score):.4f}")
                     st.divider()
+                # Store RF metrics
+                if 'rf_training_metrics' not in st.session_state:
+                    st.session_state.rf_training_metrics = []
+                st.session_state.rf_training_metrics.append({
+                    "Iteration": len(st.session_state.rf_training_metrics) + 1,
+                    "Mean CV Score": mean_cv_score,
+                    "Best Score": best_score,
+                    "N Estimators": params['n_estimators']
+                })
             if training_phase and training_phase == "rf":
                 st.session_state.rf_training_active = True
             else:
@@ -304,6 +313,27 @@ def render_training(agent, settings):
 
     if agent:
         with st.expander(f"Agent's Training Dataset - {agent.ticker} ({agent.training_start_date} to {agent.training_end_date})"):
-            st.dataframe(agent.training_data)
+            tabs = st.tabs(["DataFrame", "Correlation Heatmap", "Indicator Signals", "Q-Q Plot", "Feature Distributions with KDE", "Indicator Time Series", "Feature Variability", 
+                            "RF Feature Importance", "Rolling Volatility", "Pair Scatter"])
+            with tabs[0]:
+                st.dataframe(agent.training_data)
+            with tabs[1]:
+                ChartBuilder.plot_correlation_heatmap(agent.training_data, context="training")
+            with tabs[2]:
+                ChartBuilder.plot_indicator_signals_heatmap(agent.training_data, context="training")
+            with tabs[3]:
+                ChartBuilder.plot_qq_plot(agent.training_data, context="training")
+            with tabs[4]:
+                ChartBuilder.plot_feature_distribution_with_kde(agent.training_data, context="training")
+            with tabs[5]:
+                ChartBuilder.plot_indicator_timeseries(agent.training_data, context="training")
+            with tabs[6]:
+                ChartBuilder.plot_feature_boxplots(agent.training_data, context="training")
+            with tabs[7]:
+                ChartBuilder.plot_rf_feature_importance(agent, context="training")
+            with tabs[8]:
+                ChartBuilder.plot_rolling_volatility(agent.training_data, context="training")
+            with tabs[9]:
+                ChartBuilder.plot_pair_scatter(agent.training_data, context="training")
 
     _build_ui_controls(agent, settings, checkpoint_info, start_epoch, epoch_metrics, portfolio_values)

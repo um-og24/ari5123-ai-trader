@@ -1,0 +1,9 @@
+{
+    "ticker": "AAPL",
+    "training_start_date": "2017-01-01T00:00:00",
+    "training_end_date": "2022-12-31T00:00:00",
+    "lookback": 14,
+    "trade_fee": 5e-05,
+    "n_pca_components": 29,
+    "use_smote": false
+}

@@ -8,8 +8,10 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from plotly.figure_factory import create_distplot
+from scipy import stats
 from calculations import Calculations
-from utils import Utils
+from utils import Utils, FEATURE_COLUMNS
 
 # Set seeds for reproducibility
 np.random.seed(42)
@@ -359,7 +361,7 @@ class ChartBuilder:
 
         except Exception as e:
             Utils.log_message(f"ERROR: Error plotting transaction history: {e}")
-            chart_placeholder.plotly_chart(go.Figure())
+            chart_placeholder.plotly_chart(go.Figure(), key=f"error_trans_history_plot_{context}")
 
     @staticmethod
     def plot_trading_signals(data, actions, chart_placeholder):
@@ -630,3 +632,421 @@ class ChartBuilder:
                 Utils.log_message(f"ERROR: Error plotting training metrics: {e}")
                 fig = go.Figure()
             chart_placeholder.plotly_chart(fig, use_container_width=True)
+
+    @staticmethod
+    def plot_correlation_heatmap(data, title="Feature Correlation Matrix", context="correlation"):
+        """
+        Plot a correlation heatmap for the preprocessed DataFrame's features.
+
+        Args:
+            data (pd.DataFrame): Preprocessed DataFrame with FEATURE_COLUMNS.
+            title (str): Plot title.
+            context (str): Unique identifier for Streamlit key.
+
+        Returns:
+            None: Renders the Plotly chart in Streamlit.
+        """
+        try:
+            if data.empty or not all(col in data.columns for col in FEATURE_COLUMNS):
+                Utils.log_message(f"WARNING: Invalid data for correlation heatmap")
+                st.plotly_chart(go.Figure())
+                return
+
+            # Check for constant features
+            for col in ['Skewness', 'Kurtosis']:
+                if data[col].std() == 0:
+                    st.warning(f"Feature {col} has zero variance, which may skew correlations.")
+
+            corr_matrix = data[FEATURE_COLUMNS].corr()
+            fig = go.Figure(data=go.Heatmap(
+                z=corr_matrix.values,
+                x=corr_matrix.columns,
+                y=corr_matrix.columns,
+                colorscale='Viridis',
+                zmin=-1, zmax=1,
+                text=corr_matrix.values.round(2),
+                texttemplate="%{text}",
+                hoverinfo="z"
+            ))
+            fig.update_layout(
+                title=title,
+                width=800, height=800,
+                xaxis_title="Features",
+                yaxis_title="Features",
+                xaxis_tickangle=45
+            )
+            st.plotly_chart(fig, key=f"corr_heatmap_{context}", use_container_width=True)
+        except Exception as e:
+            Utils.log_message(f"ERROR: Error plotting correlation heatmap: {e}")
+            st.plotly_chart(go.Figure(), key=f"error_corr_heatmap_{context}")
+
+    @staticmethod
+    def plot_indicator_signals_heatmap(data, title="Normalized Indicator Signals Over Time", context="indicator_signals"):
+        """
+        Plot a time-series heatmap of normalized indicator signals.
+
+        Args:
+            data (pd.DataFrame): Preprocessed DataFrame with FEATURE_COLUMNS.
+            title (str): Plot title.
+            context (str): Unique identifier for Streamlit key.
+
+        Returns:
+            None: Renders the Plotly chart in Streamlit.
+        """
+        try:
+            if data.empty or not all(col in data.columns for col in FEATURE_COLUMNS):
+                Utils.log_message(f"WARNING: Invalid data for indicator signals heatmap")
+                st.plotly_chart(go.Figure())
+                return
+
+            indicators = ['RSI', 'MACD', 'ATR', 'BB_Penetration', 'Volatility', 'Returns']
+            data_subset = data[indicators].copy()
+            # Normalize to [0, 1]
+            data_subset = (data_subset - data_subset.min()) / (data_subset.max() - data_subset.min() + 1e-8)
+            fig = go.Figure(data=go.Heatmap(
+                z=data_subset.T.values,
+                x=data_subset.index,
+                y=indicators,
+                colorscale='Hot',
+                zmin=0, zmax=1,
+                hovertemplate="Date: %{x}<br>Indicator: %{y}<br>Value: %{z:.2f}<extra></extra>"
+            ))
+            fig.update_layout(
+                title=title,
+                xaxis_title="Date",
+                yaxis_title="Indicators",
+                height=400,
+                xaxis_tickformat='%Y-%m-%d'
+            )
+            st.plotly_chart(fig, key=f"signals_heatmap_{context}", use_container_width=True)
+        except Exception as e:
+            Utils.log_message(f"ERROR: Error plotting indicator signals heatmap: {e}")
+            st.plotly_chart(go.Figure(), key=f"error_signals_heatmap_{context}")
+
+    @staticmethod
+    def plot_qq_plot(data, indicators=None, title="Q-Q Plot for Tail Analysis", context="qq_plot"):
+        """
+        Plot Q-Q plots to compare feature distributions to normal, emphasizing tails.
+
+        Args:
+            data (pd.DataFrame): Preprocessed DataFrame (not used with caching).
+            ticker (str): Stock ticker symbol.
+            start_date (str): Start date in YYYY-MM-DD format.
+            end_date (str): End date in YYYY-MM-DD format.
+            settings (dict): User settings for preprocessing.
+            indicators (list): Features to plot (default: Returns, RSI, Volatility).
+            title (str): Plot title.
+            context (str): Unique identifier for Streamlit key.
+        """
+        try:
+            if data.empty or not all(col in data.columns for col in FEATURE_COLUMNS):
+                Utils.log_message(f"WARNING: Invalid cached data for Q-Q plot")
+                st.plotly_chart(go.Figure())
+                return
+            indicators = indicators or ['RSI', 'Volatility', 'Returns']
+            n_cols = 3
+            n_rows = (len(indicators) + n_cols - 1) // n_cols
+            fig = make_subplots(
+                rows=n_rows,
+                cols=n_cols,
+                subplot_titles=[f"{ind}" for ind in indicators],
+            )
+            for idx, indicator in enumerate(indicators):
+                if indicator in data.columns:
+                    row = (idx // n_cols) + 1
+                    col = (idx % n_cols) + 1
+                    values = data[indicator].dropna()
+                    # Generate Q-Q plot data
+                    (osm, osr), (slope, intercept, r) = stats.probplot(values, dist="norm")
+                    # Plot Q-Q points
+                    fig.add_trace(
+                        go.Scatter(
+                            x=osm,
+                            y=osr,
+                            mode="markers",
+                            name=indicator,
+                            marker=dict(color="blue", size=5),
+                            showlegend=False,
+                        ),
+                        row=row, col=col
+                    )
+                    # Plot reference line (normal distribution)
+                    x = np.array([osm.min(), osm.max()])
+                    y = slope * x + intercept
+                    fig.add_trace(
+                        go.Scatter(
+                            x=x,
+                            y=y,
+                            mode="lines",
+                            name="Normal Reference",
+                            line=dict(color="red", width=2),
+                            showlegend=False,
+                        ),
+                        row=row, col=col
+                    )
+            fig.update_layout(
+                title=title,
+                xaxis_title="Theoretical Quantiles",
+                yaxis_title="Sample Quantiles",
+                showlegend=True,
+                template="plotly_white",
+                height=400,
+                width=1000,
+            )
+            for i in range(1, n_cols + 1):
+                fig.update_xaxes(title_text="Theoretical Quantiles", row=1, col=i)
+                fig.update_yaxes(title_text="Sample Quantiles", row=1, col=i)
+            st.plotly_chart(fig, key=f"qq_plot_{context}", use_container_width=True)
+        except Exception as e:
+            Utils.log_message(f"ERROR: Error plotting Q-Q plot: {e}")
+            st.plotly_chart(go.Figure(), key=f"error_qq_plot_{context}")
+
+    @staticmethod
+    def plot_feature_distribution_with_kde(data, indicators=None, title="Feature Distributions with KDE", context="dist_kde"):
+        """
+        Plot histograms with KDE for selected features, annotating skewness and kurtosis.
+
+        Args:
+            data (pd.DataFrame): Preprocessed DataFrame (not used with caching).
+            ticker (str): Stock ticker symbol.
+            start_date (str): Start date in YYYY-MM-DD format.
+            end_date (str): End date in YYYY-MM-DD format.
+            settings (dict): User settings for preprocessing.
+            indicators (list): Features to plot (default: Returns, RSI, Volatility).
+            title (str): Plot title.
+            context (str): Unique identifier for Streamlit key.
+        """
+        try:
+            if data.empty or not all(col in data.columns for col in FEATURE_COLUMNS):
+                Utils.log_message(f"WARNING: Invalid cached data for distribution with KDE")
+                st.plotly_chart(go.Figure())
+                return
+            indicators = indicators or ['RSI', 'MACD', 'ATR', 'BB_Penetration', 'Volatility', 'Returns']
+            n_cols = 3
+            n_rows = (len(indicators) + n_cols - 1) // n_cols
+            fig = make_subplots(rows=n_rows, cols=n_cols, subplot_titles=[f"{ind} (Skew: {data[ind].skew():.2f}, Kurt: {data[ind].kurt():.2f})" for ind in indicators])
+            for idx, indicator in enumerate(indicators):
+                if indicator in data.columns:
+                    row = (idx // n_cols) + 1
+                    col = (idx % n_cols) + 1
+                    # Histogram
+                    fig.add_trace(
+                        go.Histogram(
+                            x=data[indicator],
+                            name=indicator,
+                            histnorm='probability density',
+                            nbinsx=50,
+                            marker_color='blue',
+                            opacity=0.5,
+                            showlegend=False
+                        ),
+                        row=row, col=col
+                    )
+                    # KDE
+                    dist = create_distplot([data[indicator].dropna()], group_labels=[indicator], show_hist=False, show_rug=False)
+                    for trace in dist['data']:
+                        if trace['type'] == 'scatter':
+                            fig.add_trace(
+                                go.Scatter(
+                                    x=trace['x'],
+                                    y=trace['y'],
+                                    mode='lines',
+                                    name=f"{indicator} KDE",
+                                    line=dict(color='red', width=2),
+                                    showlegend=False
+                                ),
+                                row=row, col=col
+                            )
+            fig.update_layout(
+                title=title,
+                showlegend=False,
+                template='plotly_white',
+                height=300 * n_rows,
+                width=800
+            )
+            st.plotly_chart(fig, key=f"dist_kde_{context}", use_container_width=True)
+        except Exception as e:
+            Utils.log_message(f"ERROR: Error plotting distribution with KDE: {e}")
+            st.plotly_chart(go.Figure, key=f"error_dist_kde_{context}")
+
+    @staticmethod
+    def plot_indicator_timeseries(data, indicators=None, title="Indicator Time Series", context="timeseries"):
+        try:
+            if data.empty or not all(col in data.columns for col in FEATURE_COLUMNS):
+                Utils.log_message(f"WARNING: Invalid data for indicator time series")
+                st.plotly_chart(go.Figure())
+                return
+            indicators = indicators or ['RSI', 'MACD', 'ATR', 'BB_Penetration']
+            fig = go.Figure()
+            for indicator in indicators:
+                if indicator in data.columns:
+                    # Normalize to [0, 1]
+                    values = (data[indicator] - data[indicator].min()) / (data[indicator].max() - data[indicator].min() + 1e-8)
+                    fig.add_trace(
+                        go.Scatter(
+                            x=data.index,
+                            y=values,
+                            mode='lines',
+                            name=indicator,
+                            line=dict(width=2)
+                        )
+                    )
+            fig.update_layout(
+                title=title,
+                xaxis_title="Date",
+                yaxis_title="Normalized Value",
+                showlegend=True,
+                template='plotly_white',
+                height=400,
+                xaxis_tickformat='%Y-%m-%d'
+            )
+            st.plotly_chart(fig, key=f"timeseries_{context}", use_container_width=True)
+        except Exception as e:
+            Utils.log_message(f"ERROR: Error plotting indicator time series: {e}")
+            st.plotly_chart(go.Figure(), key=f"error_timeseries_{context}")
+
+    @staticmethod
+    def plot_feature_boxplots(data, indicators=None, title="Feature Variability", context="boxplots"):
+        try:
+            if data.empty or not all(col in data.columns for col in FEATURE_COLUMNS):
+                Utils.log_message(f"WARNING: Invalid data for feature boxplots")
+                st.plotly_chart(go.Figure())
+                return
+            indicators = indicators or ['RSI', 'MACD', 'ATR', 'Volatility', 'Returns']
+            fig = go.Figure()
+            for indicator in indicators:
+                if indicator in data.columns:
+                    fig.add_trace(
+                        go.Box(
+                            y=data[indicator],
+                            name=indicator,
+                            boxpoints='outliers',
+                            jitter=0.3,
+                            marker_color='purple'
+                        )
+                    )
+            fig.update_layout(
+                title=title,
+                yaxis_title="Value",
+                showlegend=False,
+                template='plotly_white',
+                height=400
+            )
+            st.plotly_chart(fig, key=f"boxplots_{context}", use_container_width=True)
+        except Exception as e:
+            Utils.log_message(f"ERROR: Error plotting feature boxplots: {e}")
+            st.plotly_chart(go.Figure(), key=f"error_boxplots_{context}")
+
+    @staticmethod
+    def plot_rf_feature_importance(agent, title="RF Feature Importance", context="feature_importance"):
+        try:
+            if not hasattr(agent.rf_agent, 'rf_model') or agent.rf_agent.rf_model is None:
+                Utils.log_message(f"WARNING: RF model not trained for feature importance")
+                st.plotly_chart(go.Figure())
+                return
+            importances = agent.rf_agent.rf_model.feature_importances_
+            # Map PCA components back to original features
+            feature_names = [f"PC{i+1}" for i in range(len(importances))]
+            fig = go.Figure()
+            fig.add_trace(
+                go.Bar(
+                    x=feature_names,
+                    y=importances,
+                    marker_color='teal',
+                    text=[f"{imp:.3f}" for imp in importances],
+                    textposition='auto'
+                )
+            )
+            fig.update_layout(
+                title=title,
+                xaxis_title="PCA Components",
+                yaxis_title="Importance",
+                template='plotly_white',
+                height=400
+            )
+            st.plotly_chart(fig, key=f"feature_importance_{context}", use_container_width=True)
+        except Exception as e:
+            Utils.log_message(f"ERROR: Error plotting RF feature importance: {e}")
+            st.plotly_chart(go.Figure(), key=f"error_feature_importance_{context}")
+
+    @staticmethod
+    def plot_rolling_volatility(data, window=20, title="Rolling Volatility", context="volatility"):
+        try:
+            if data.empty or 'Returns' not in data.columns:
+                Utils.log_message(f"WARNING: Invalid data for rolling volatility")
+                st.plotly_chart(go.Figure())
+                return
+            volatility = data['Returns'].rolling(window=window, min_periods=1).std() * np.sqrt(252) * 100  # Annualized
+            fig = go.Figure()
+            fig.add_trace(
+                go.Scatter(
+                    x=data.index,
+                    y=volatility,
+                    mode='lines',
+                    name='Volatility (%)',
+                    line=dict(color='red', width=2)
+                )
+            )
+            fig.update_layout(
+                title=title,
+                xaxis_title="Date",
+                yaxis_title="Annualized Volatility (%)",
+                template='plotly_white',
+                height=400,
+                xaxis_tickformat='%Y-%m-%d'
+            )
+            st.plotly_chart(fig, key=f"volatility_{context}", use_container_width=True)
+        except Exception as e:
+            Utils.log_message(f"ERROR: Error plotting rolling volatility: {e}")
+            st.plotly_chart(go.Figure(), key=f"error_volatility_{context}")
+
+    @staticmethod
+    def plot_pair_scatter(data, indicators=None, title="Feature Pair Scatter", context="pair_scatter"):
+        try:
+            if data.empty or not all(col in data.columns for col in FEATURE_COLUMNS):
+                Utils.log_message(f"WARNING: Invalid data for pair scatter")
+                st.plotly_chart(go.Figure())
+                return
+            indicators = indicators or ['RSI', 'MACD', 'ATR']
+            fig = make_subplots(
+                rows=len(indicators), cols=len(indicators),
+                subplot_titles=[f"{i1} vs {i2}" for i1 in indicators for i2 in indicators]
+            )
+            for i, ind1 in enumerate(indicators):
+                for j, ind2 in enumerate(indicators):
+                    fig.add_trace(
+                        go.Scatter(
+                            x=data[ind1],
+                            y=data[ind2],
+                            mode='markers',
+                            marker=dict(size=5, opacity=0.5),
+                            showlegend=False
+                        ),
+                        row=i+1, col=j+1
+                    )
+            fig.update_layout(
+                title=title,
+                showlegend=False,
+                template='plotly_white',
+                height=200 * len(indicators),
+                width=200 * len(indicators)
+            )
+            st.plotly_chart(fig, key=f"pair_scatter_{context}", use_container_width=True)
+        except Exception as e:
+            Utils.log_message(f"ERROR: Error plotting pair scatter: {e}")
+            st.plotly_chart(go.Figure(), key=f"error_pair_scatter_{context}")
+
+    @staticmethod
+    def _generate_data_hash(ticker, start_date, end_date, settings=None):
+        """Generate a hash for caching based on data parameters."""
+        settings = settings or {}
+        hash_components = [
+            ticker,
+            str(start_date),
+            str(end_date),
+            str(settings.get('lookback', 30)),
+            str(settings.get('atr_period', 14)),
+            str(settings.get('atr_smoothing', True)),
+            str(settings.get('use_smote', False))
+        ]
+        return "_".join(hash_components)

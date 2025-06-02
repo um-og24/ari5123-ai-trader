@@ -1,0 +1,16 @@
+{
+    "best_sharpe": 0.44393095630643153,
+    "last_drawdown": 145.3639999999998,
+    "total_trades": 444,
+    "dqn_temperature": 0.8008264083574369,
+    "rf_best_score": 0.44594594594594594,
+    "rf_best_params": {
+        "n_estimators": 100,
+        "max_depth": 5,
+        "min_samples_split": 5,
+        "min_samples_leaf": 5,
+        "max_features": "log2"
+    },
+    "rf_n_pca_components": 29,
+    "last_updated": "2025-05-28T17:29:41.907487"
+}

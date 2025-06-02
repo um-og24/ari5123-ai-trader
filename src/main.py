@@ -41,6 +41,7 @@ def _initialize_session_state():
         'status_text': None,
         'rf_metrics': None,
         'rf_training_active': False,
+        'rf_training_metrics': [],
         'trading_start_date': pd.Timestamp("2023-01-01"),
         'trading_end_date': pd.Timestamp("2025-05-25"),
         # 'trading_start_date': pd.Timestamp.now().date() - pd.Timedelta(days=365),

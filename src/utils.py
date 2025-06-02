@@ -56,151 +56,9 @@ DEFAULT_HEADER = (st.success, ICONS[4])
 
 class Utils:
     """Centralized class for utility functions."""
-    
-    @staticmethod
-    def preprocess_data_old(df, required_columns=REQUIRED_DATA_COLUMNS, rsi_period=14, macd_params=(12, 26, 9), bb_window=20, volatility_period=14, atr_smoothing=True, rsi_divergence_params={'diff_period': 3, 'smooth_period': 5, 'rsi_threshold': -0.1}):
-        """
-        Preprocess financial data by adding technical indicators and volatility features.
-
-        This function computes technical indicators (RSI, SMA, MACD, Bollinger Bands, ATR),
-        returns, volatility, lagged returns, skewness, kurtosis, and RSI divergence signals
-        for a financial dataset, preparing it for trading or machine learning applications.
-
-        Args:
-            df (pd.DataFrame): Input DataFrame with required columns.
-            required_columns (list[str]): List of required columns (default: REQUIRED_DATA_COLUMNS).
-            rsi_period (int): Period for RSI calculation (default: 14).
-            macd_params (tuple): Tuple of (short_ema, long_ema, signal_ema) periods for MACD (default: (12, 26, 9)).
-            bb_window (int): Window for Bollinger Bands and SMA calculations (default: 20).
-            volatility_period (int): Period for volatility and ATR calculations (default: 14).
-            atr_smoothing (bool): If True, use EMA smoothing for ATR; otherwise, use simple moving average (default: True).
-            rsi_divergence_params (dict): Parameters for RSI divergence:
-                - diff_period (int): Period for slope calculation (default: 3).
-                - smooth_period (int): Smoothing period for slopes (default: 5).
-                - rsi_threshold (float): Threshold for RSI slope to detect divergence (default: -0.1).
-
-        Returns:
-            pd.DataFrame: Preprocessed DataFrame with additional columns:
-                - RSI: Relative Strength Index (0-100).
-                - SMA20: 20-period simple moving average, in price units.
-                - MACD: MACD histogram, in price units.
-                - BB_Upper, BB_Lower: Bollinger Bands, in price units.
-                - BB: Normalized price distance from SMA, in standard deviation units.
-                - BB_Penetration: 1 (above upper band), -1 (below lower band), 0 (within bands).
-                - ATR: Average True Range, in price units.
-                - Returns: Percentage price returns.
-                - Volatility: Rolling standard deviation of returns.
-                - RSI_Slope, Price_Slope: Smoothed slopes for divergence calculation.
-                - RSI_Divergence: 1 (bearish divergence), -1 (bullish divergence), 0 (no divergence).
-                - Lag1_Return, Lag3_Return, Lag5_Return: Lagged percentage returns for 1, 3, 5 periods.
-                - Skewness: Rolling skewness of returns over 20 periods.
-                - Kurtosis: Rolling kurtosis of returns over 20 periods.
-
-        Raises:
-            ValueError: If required columns are missing, non-numeric, or DataFrame structure is invalid.
-            RuntimeError: If preprocessing fails due to data issues or computation errors.
-
-        Notes:
-            - Input data must have a monotonic increasing index (sorted if not).
-            - Rows with NaN values are dropped after computation.
-            - Uses `min_periods=1` in rolling calculations to preserve early data where possible.
-            - Handles MultiIndex columns by selecting or flattening to standard column names.
-        """
-        from calculations import Calculations
-        try:
-            if not isinstance(df, pd.DataFrame):
-                Utils.log_message(f"ERROR: Input is not a pandas DataFrame: type={type(df)}")
-                raise ValueError(f"Input must be a pandas DataFrame, got {type(df)}")
-
-            Utils.log_message(f"DEBUG: Input DataFrame shape: {df.shape}, columns: {df.columns.tolist()}")
-
-            if isinstance(df.columns, pd.MultiIndex):
-                ticker = df.columns[0][1] if len(df.columns) > 0 else None
-                if ticker:
-                    try:
-                        df = df.xs(ticker, level=1, axis=1)
-                        df.columns = [col.split()[-1] for col in df.columns]
-                    except KeyError:
-                        Utils.log_message(f"ERROR: Ticker {ticker} not found in MultiIndex columns")
-                        raise ValueError(f"Cannot extract ticker {ticker} from MultiIndex columns")
-                else:
-                    Utils.log_message(f"ERROR: Cannot determine ticker from MultiIndex columns")
-                    raise ValueError("MultiIndex columns detected, but no ticker found")
-
-            missing_cols = [col for col in required_columns if col not in df.columns]
-            if missing_cols:
-                Utils.log_message(f"ERROR: Missing required columns: {missing_cols}")
-                raise ValueError(f"Missing required columns: {missing_cols}")
-
-            for col in required_columns:
-                series = df[col]
-                if not isinstance(series, pd.Series):
-                    Utils.log_message(f"ERROR: Column {col} did not return a Series: type={type(series)}")
-                    raise ValueError(f"Column {col} must be a pandas Series, got {type(series)}")
-                if not pd.api.types.is_numeric_dtype(series):
-                    Utils.log_message(f"ERROR: Column {col} is not numeric: dtype={series.dtype}")
-                    raise ValueError(f"Column {col} must be numeric, got dtype {series.dtype}")
-
-            if not df.index.is_monotonic_increasing:
-                Utils.log_message(f"WARNING: Data index is not monotonic; sorting by index")
-                df = df.sort_index()
-
-            data = df[required_columns].copy()
-
-            # Add technical indicators
-            data['RSI'] = Calculations.compute_rsi(data['Close'], rsi_period)
-            data['SMA20'] = data['Close'].rolling(window=20, min_periods=1).mean()
-            data['SMA70'] = data['Close'].rolling(window=70, min_periods=1).mean()
-            data['MACD'] = Calculations.compute_macd(data['Close'], macd_params)
-            data['BB_Upper'], data['BB_Lower'], data['BB'] = Calculations.compute_bollinger_band(data['Close'], bb_window)
-            data['BB_Penetration'] = np.select(
-                [
-                    data['Close'] > data['BB_Upper'],
-                    data['Close'] < data['BB_Lower']
-                ],
-                [1, -1],
-                default=0
-            )
-            
-            # Add ATR
-            data['ATR'] = Calculations.compute_atr(data, period=volatility_period, smoothing=atr_smoothing)
-            
-            # Add returns and volatility
-            data['Returns'] = data['Close'].pct_change()
-            data['Volatility'] = data['Close'].pct_change().rolling(window=volatility_period, min_periods=1).std()
-            
-            # Calculate RSI Divergence
-            data['RSI_Slope'] = data['RSI'].diff(rsi_divergence_params['diff_period']).rolling(rsi_divergence_params['smooth_period']).mean()
-            data['Price_Slope'] = data['Close'].diff(rsi_divergence_params['diff_period']).rolling(rsi_divergence_params['smooth_period']).mean()
-            data['RSI_Divergence'] = np.where(
-                (data['Price_Slope'] > 0) & (data['RSI_Slope'] < rsi_divergence_params['rsi_threshold']), 1,  # Bearish
-                np.where((data['Price_Slope'] < 0) & (data['RSI_Slope'] > -rsi_divergence_params['rsi_threshold']), -1, 0)  # Bullish
-            )
-            
-            # Add lagged returns
-            data['Lag1_Return'] = data['Close'].pct_change(1)
-            data['Lag3_Return'] = data['Close'].pct_change(3)
-            data['Lag5_Return'] = data['Close'].pct_change(5)
-            
-            # Add skewness and kurtosis
-            data['Skewness'] = data['Returns'].rolling(window=20, min_periods=1).skew()
-            data['Kurtosis'] = data['Returns'].rolling(window=20, min_periods=1).kurt()
-
-            Utils.log_message(f"INFO: Input data: {len(data)} rows")
-            # Select only FEATURE_COLUMNS to ensure consistent output
-            data = data[FEATURE_COLUMNS]
-            # Drop rows with NaN values
-            data = data.dropna()
-
-            Utils.log_message(f"INFO: Preprocessed data: {len(data)} rows, columns: {data.columns.tolist()}")
-
-            return data
-        except Exception as e:
-            Utils.log_message(f"ERROR: Error preprocessing data: {e}")
-            raise RuntimeError(f"Error preprocessing data: {e}")
 
     @staticmethod
-    def preprocess_data(df, required_columns=REQUIRED_DATA_COLUMNS, rsi_period=14, macd_params=(12, 26, 9), bb_window=20, volatility_period=14, atr_smoothing=True, rsi_divergence_params={'diff_period': 3, 'smooth_period': 5, 'rsi_threshold': -0.1}):
+    def preprocess_data(df, required_columns=REQUIRED_DATA_COLUMNS, rsi_period=14, macd_params=(12, 26, 9), bb_window=20, volatility_period=14, atr_smoothing=True, rsi_divergence_params={'diff_period': 5, 'smooth_period': 3, 'rsi_threshold': 0.2}):
         """
         Preprocess financial data by adding technical indicators incrementally to avoid look-ahead bias.
 
@@ -260,28 +118,46 @@ class Utils:
 
             # Incremental indicator calculation to avoid look-ahead bias
             def compute_rolling_indicators(window_data):
-                temp_data = window_data.copy()
-                temp_data['RSI'] = Calculations.compute_rsi(temp_data['Close'], rsi_period).iloc[-1]
-                temp_data['SMA20'] = temp_data['Close'].rolling(window=20, min_periods=1).mean().iloc[-1]
-                temp_data['SMA70'] = temp_data['Close'].rolling(window=70, min_periods=1).mean().iloc[-1]
-                temp_data['MACD'] = Calculations.compute_macd(temp_data['Close'], macd_params).iloc[-1]
-                upper, lower, bb = Calculations.compute_bollinger_band(temp_data['Close'], bb_window)
-                temp_data['BB_Upper'] = upper.iloc[-1]
-                temp_data['BB_Lower'] = lower.iloc[-1]
-                temp_data['BB'] = bb.iloc[-1]
-                temp_data['BB_Penetration'] = 1 if temp_data['Close'].iloc[-1] > upper.iloc[-1] else -1 if temp_data['Close'].iloc[-1] < lower.iloc[-1] else 0
-                temp_data['ATR'] = Calculations.compute_atr(temp_data, period=volatility_period, smoothing=atr_smoothing).iloc[-1]
-                temp_data['Returns'] = temp_data['Close'].pct_change().iloc[-1]
-                temp_data['Volatility'] = temp_data['Close'].pct_change().rolling(window=volatility_period, min_periods=1).std().iloc[-1]
-                temp_data['RSI_Slope'] = temp_data['RSI'].diff(rsi_divergence_params['diff_period']).rolling(rsi_divergence_params['smooth_period']).mean().iloc[-1]
-                temp_data['Price_Slope'] = temp_data['Close'].diff(rsi_divergence_params['diff_period']).rolling(rsi_divergence_params['smooth_period']).mean().iloc[-1]
-                temp_data['RSI_Divergence'] = 1 if (temp_data['Price_Slope'].iloc[-1] > 0 and temp_data['RSI_Slope'].iloc[-1] < rsi_divergence_params['rsi_threshold']) else -1 if (temp_data['Price_Slope'].iloc[-1] < 0 and temp_data['RSI_Slope'].iloc[-1] > -rsi_divergence_params['rsi_threshold']) else 0
-                temp_data['Lag1_Return'] = temp_data['Close'].pct_change(1).iloc[-1]
-                temp_data['Lag3_Return'] = temp_data['Close'].pct_change(3).iloc[-1]
-                temp_data['Lag5_Return'] = temp_data['Close'].pct_change(5).iloc[-1]
-                temp_data['Skewness'] = temp_data['Returns'].rolling(window=20, min_periods=1).skew().iloc[-1]
-                temp_data['Kurtosis'] = temp_data['Returns'].rolling(window=20, min_periods=1).kurt().iloc[-1]
-                return temp_data.iloc[-1][FEATURE_COLUMNS]
+                # Add technical indicators
+                data = window_data.copy()
+                data['RSI'] = Calculations.compute_rsi(data['Close'], rsi_period)
+                data['SMA20'] = data['Close'].rolling(window=20, min_periods=1).mean()
+                data['SMA70'] = data['Close'].rolling(window=70, min_periods=1).mean()
+                data['MACD'] = Calculations.compute_macd(data['Close'], macd_params)
+                data['BB_Upper'], data['BB_Lower'], data['BB'] = Calculations.compute_bollinger_band(data['Close'], bb_window)
+                data['BB_Penetration'] = np.select(
+                    [
+                        data['Close'] > data['BB_Upper'],
+                        data['Close'] < data['BB_Lower']
+                    ],
+                    [1, -1],
+                    default=0
+                )
+                
+                # Add ATR
+                data['ATR'] = Calculations.compute_atr(data, period=volatility_period, smoothing=atr_smoothing)
+                
+                # Add returns and volatility
+                data['Returns'] = data['Close'].pct_change() # Calculate arithmetic returns (percentage change)
+                data['Volatility'] = data['Close'].pct_change().rolling(window=volatility_period, min_periods=1).std()
+                
+                # Calculate RSI Divergence
+                data['RSI_Slope'] = data['RSI'].diff(rsi_divergence_params['diff_period']).rolling(rsi_divergence_params['smooth_period']).mean()
+                data['Price_Slope'] = data['Close'].diff(rsi_divergence_params['diff_period']).rolling(rsi_divergence_params['smooth_period']).mean()
+                data['RSI_Divergence'] = np.where(
+                    (data['Price_Slope'] > 0) & (data['RSI_Slope'] < rsi_divergence_params['rsi_threshold']), 1,  # Bearish
+                    np.where((data['Price_Slope'] < 0) & (data['RSI_Slope'] > -rsi_divergence_params['rsi_threshold']), -1, 0)  # Bullish
+                )
+                
+                # Add lagged returns
+                data['Lag1_Return'] = data['Close'].pct_change(1)
+                data['Lag3_Return'] = data['Close'].pct_change(3)
+                data['Lag5_Return'] = data['Close'].pct_change(5)
+                
+                # Add skewness and kurtosis
+                data['Skewness'] = data['Returns'].rolling(window=20, min_periods=1).skew()
+                data['Kurtosis'] = data['Returns'].rolling(window=20, min_periods=1).kurt()
+                return data.iloc[-1][FEATURE_COLUMNS]
 
             # Apply indicators row by row for each window
             processed_data = []
@@ -305,7 +181,6 @@ class Utils:
             raise RuntimeError(f"Error preprocessing data: {e}")
 
 
-
     @staticmethod
     def display_action(action, q_values, placeholder):
         with placeholder.container():
@@ -319,6 +194,7 @@ class Utils:
             else:
                 st.success(action_message)
             st.toast(action_message, icon=action_icons[action])
+
 
     @staticmethod
     def check_and_restore_settings(agent, current_settings, comparison_keys, context=""):
