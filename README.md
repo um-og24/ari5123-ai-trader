@@ -63,3 +63,24 @@ Live Trading Simulation use AAPL form 2023-01-01 - 2025-05-25
     "confirmation_steps": 1
 }
 ```
+
+
+## Docker Image
+
+
+If `docker-compose.yml` file is available, Then:-
+
+Build the image locally: `docker-compose up --build -d`
+
+Else:-
+
+Login (make sure Docker Desktop is running): `docker login`
+
+Build and push onto Docker hub: `docker build -t owengauci24/ari5123-ai-trader-app:latest . --push`
+
+, or to make it platform independent: `docker buildx build --platform linux/amd64,linux/arm64 -t owengauci24/ari5123-ai-trader-app:latest . --push`
+
+Download a copy: `docker pull owengauci24/ari5123-ai-trader-app:latest`
+
+Run the image: `docker run -it -p 8506:8506 owengauci24/ari5123-ai-trader-app:latest`
+
