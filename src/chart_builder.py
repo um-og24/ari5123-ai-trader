@@ -20,6 +20,7 @@ class ChartBuilder:
     """Centralized class for creating Plotly charts for portfolio and training visualization."""
     
     @staticmethod
+    @st.cache_data(ttl=1800)
     def plot_portfolio_performance(history, metrics, title='Performance Over Time', show_cash_positions=True, show_metrics=True):
         """
         Plot portfolio total value, cash, position value, and drawdown over time with trade P&L annotations
@@ -570,6 +571,7 @@ class ChartBuilder:
         st.plotly_chart(fig, use_container_width=True)
 
     @staticmethod
+    @st.cache_data(ttl=1800)
     def plot_portfolio_over_time(portfolio_values, chart_placeholder):
         if portfolio_values:
             fig = go.Figure()
@@ -590,6 +592,7 @@ class ChartBuilder:
             chart_placeholder.plotly_chart(fig, use_container_width=True)
     
     @staticmethod
+    @st.cache_data(ttl=1800)
     def plot_training_metrics(epoch_metrics, metrics_table_placeholder, chart_placeholder):
         if epoch_metrics:
             with metrics_table_placeholder.container():
@@ -634,6 +637,7 @@ class ChartBuilder:
             chart_placeholder.plotly_chart(fig, use_container_width=True)
 
     @staticmethod
+    @st.cache_data(ttl=1800)
     def plot_correlation_heatmap(data, title="Feature Correlation Matrix", context="correlation"):
         """
         Plot a correlation heatmap for the preprocessed DataFrame's features.
@@ -681,6 +685,7 @@ class ChartBuilder:
             st.plotly_chart(go.Figure(), key=f"error_corr_heatmap_{context}")
 
     @staticmethod
+    @st.cache_data(ttl=1800)
     def plot_indicator_signals_heatmap(data, title="Normalized Indicator Signals Over Time", context="indicator_signals"):
         """
         Plot a time-series heatmap of normalized indicator signals.
@@ -724,6 +729,7 @@ class ChartBuilder:
             st.plotly_chart(go.Figure(), key=f"error_signals_heatmap_{context}")
 
     @staticmethod
+    @st.cache_data(ttl=1800)
     def plot_qq_plot(data, indicators=None, title="Q-Q Plot for Tail Analysis", context="qq_plot"):
         """
         Plot Q-Q plots to compare feature distributions to normal, emphasizing tails.
@@ -802,6 +808,7 @@ class ChartBuilder:
             st.plotly_chart(go.Figure(), key=f"error_qq_plot_{context}")
 
     @staticmethod
+    @st.cache_data(ttl=1800)
     def plot_feature_distribution_with_kde(data, indicators=None, title="Feature Distributions with KDE", context="dist_kde"):
         """
         Plot histograms with KDE for selected features, annotating skewness and kurtosis.
@@ -870,6 +877,7 @@ class ChartBuilder:
             st.plotly_chart(go.Figure, key=f"error_dist_kde_{context}")
 
     @staticmethod
+    @st.cache_data(ttl=1800)
     def plot_indicator_timeseries(data, indicators=None, title="Indicator Time Series", context="timeseries"):
         try:
             if data.empty or not all(col in data.columns for col in FEATURE_COLUMNS):
@@ -906,6 +914,7 @@ class ChartBuilder:
             st.plotly_chart(go.Figure(), key=f"error_timeseries_{context}")
 
     @staticmethod
+    @st.cache_data(ttl=1800)
     def plot_feature_boxplots(data, indicators=None, title="Feature Variability", context="boxplots"):
         try:
             if data.empty or not all(col in data.columns for col in FEATURE_COLUMNS):
@@ -938,13 +947,14 @@ class ChartBuilder:
             st.plotly_chart(go.Figure(), key=f"error_boxplots_{context}")
 
     @staticmethod
-    def plot_rf_feature_importance(agent, title="RF Feature Importance", context="feature_importance"):
+    @st.cache_data(ttl=1800)
+    def plot_rf_feature_importance(_agent, title="RF Feature Importance", context="feature_importance"):
         try:
-            if not hasattr(agent.rf_agent, 'rf_model') or agent.rf_agent.rf_model is None:
+            if not hasattr(_agent.rf_agent, 'rf_model') or _agent.rf_agent.rf_model is None:
                 Utils.log_message(f"WARNING: RF model not trained for feature importance")
                 st.plotly_chart(go.Figure())
                 return
-            importances = agent.rf_agent.rf_model.feature_importances_
+            importances = _agent.rf_agent.rf_model.feature_importances_
             # Map PCA components back to original features
             feature_names = [f"PC{i+1}" for i in range(len(importances))]
             fig = go.Figure()
@@ -970,6 +980,7 @@ class ChartBuilder:
             st.plotly_chart(go.Figure(), key=f"error_feature_importance_{context}")
 
     @staticmethod
+    @st.cache_data(ttl=1800)
     def plot_rolling_volatility(data, window=20, title="Rolling Volatility", context="volatility"):
         try:
             if data.empty or 'Returns' not in data.columns:
@@ -1001,6 +1012,7 @@ class ChartBuilder:
             st.plotly_chart(go.Figure(), key=f"error_volatility_{context}")
 
     @staticmethod
+    @st.cache_data(ttl=1800)
     def plot_pair_scatter(data, indicators=None, title="Feature Pair Scatter", context="pair_scatter"):
         try:
             if data.empty or not all(col in data.columns for col in FEATURE_COLUMNS):
@@ -1035,18 +1047,3 @@ class ChartBuilder:
         except Exception as e:
             Utils.log_message(f"ERROR: Error plotting pair scatter: {e}")
             st.plotly_chart(go.Figure(), key=f"error_pair_scatter_{context}")
-
-    @staticmethod
-    def _generate_data_hash(ticker, start_date, end_date, settings=None):
-        """Generate a hash for caching based on data parameters."""
-        settings = settings or {}
-        hash_components = [
-            ticker,
-            str(start_date),
-            str(end_date),
-            str(settings.get('lookback', 30)),
-            str(settings.get('atr_period', 14)),
-            str(settings.get('atr_smoothing', True)),
-            str(settings.get('use_smote', False))
-        ]
-        return "_".join(hash_components)

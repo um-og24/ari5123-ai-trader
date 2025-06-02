@@ -3,8 +3,20 @@ os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 import sys
 sys.dont_write_bytecode = True
 
+import random
+import numpy as np
+import tensorflow as tf
 import streamlit as st
 st.set_page_config(page_title="Ensemble AI Auto Trader", layout="wide")
+
+# Set seeds for reproducibility
+def set_global_seeds(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    tf.random.set_seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+
+set_global_seeds(42)
 
 import pandas as pd
 
@@ -44,10 +56,9 @@ def _initialize_session_state():
         'rf_training_metrics': [],
         'trading_start_date': pd.Timestamp("2023-01-01"),
         'trading_end_date': pd.Timestamp("2025-05-25"),
-        # 'trading_start_date': pd.Timestamp.now().date() - pd.Timedelta(days=365),
-        # 'trading_end_date': pd.Timestamp.now().date() - pd.Timedelta(days=1),
         'trading_simulation_delay': 5
     }
+
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
@@ -113,7 +124,7 @@ def _render_sidebar(saved_settings=None):
             default_lookback = saved_settings['lookback'] if saved_settings and saved_settings['lookback'] is not None else 30
             lookback = st.slider("Lookback Window (days)", 5, 90, default_lookback)
             default_batch_size = saved_settings.get('batch_size', 64) if saved_settings and saved_settings.get('batch_size', 64) is not None else 64
-            batch_size = st.slider("Batch Size", 16, 128, default_batch_size, step=32)
+            batch_size = st.slider("Batch Size", 16, 128, default_batch_size, step=16)
             default_max_trades_per_epoch = saved_settings['max_trades_per_epoch'] if saved_settings and saved_settings['max_trades_per_epoch'] is not None else 10000
             max_trades_per_epoch = st.number_input("Max Trades per Epoch (0 = unlimited)", 0, 100000, default_max_trades_per_epoch)
             default_max_fee_per_epoch = saved_settings['max_fee_per_epoch'] if saved_settings and saved_settings['max_fee_per_epoch'] is not None else 10000
@@ -162,9 +173,12 @@ def _render_sidebar(saved_settings=None):
 
             st.divider()
 
-            st.subheader("Simulation Delay")
+            st.subheader("Simulation Settings")
             default_trading_simulation_delay = saved_settings['trading_simulation_delay'] if saved_settings and saved_settings['trading_simulation_delay'] is not None else 5
-            trading_simulation_delay = st.slider("Trading Simulation Delay (seconds)", 1, 60, default_trading_simulation_delay)
+            trading_simulation_delay = st.slider("Trading Simulation Delay (seconds)", 1, 60, default_trading_simulation_delay, help="Delay between trading days when running with delays.")
+
+            default_run_all_at_once = saved_settings['run_all_at_once'] if saved_settings and saved_settings['run_all_at_once'] is not None else False
+            run_all_at_once = st.toggle("Run All at Once", value=default_run_all_at_once, help="Enable to run the entire simulation instantly; disable to process day-by-day with delays.")
 
             st.divider()
         
@@ -200,7 +214,8 @@ def _render_sidebar(saved_settings=None):
             'atr_period': atr_period,
             'atr_smoothing': atr_smoothing,
             'use_smote': use_smote,
-            'trading_simulation_delay': trading_simulation_delay
+            'trading_simulation_delay': trading_simulation_delay,
+            'run_all_at_once': run_all_at_once,
         }
 
     return settings

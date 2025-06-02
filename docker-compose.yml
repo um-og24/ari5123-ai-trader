@@ -8,7 +8,7 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONDONTWRITEBYTECODE=1
-    command: /bin/bash -c "streamlit run ./src/main.py --server.port 8506"
+    command: /bin/bash -c "streamlit run ./src/main.py --server.port=8506"
     ports:
       - 8506:8506
     restart: unless-stopped

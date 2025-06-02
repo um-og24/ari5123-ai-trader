@@ -27,7 +27,4 @@ COPY . /ari5123-ai-trader-app
 EXPOSE 8506:8506
 
 
-ENTRYPOINT ["/bin/bash", "-c"]
-
-
-CMD ["streamlit", "run", "./src/main.py", "--server.port", "8506"]
+CMD ["streamlit", "run", "./src/main.py", "--server.port=8506"]

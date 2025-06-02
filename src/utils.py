@@ -10,9 +10,6 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 
-# Set seeds for reproducibility
-np.random.seed(42)
-
 LOG_FILE_PATH = "system_logs/system_log.txt"
 
 def _init_logger():
@@ -35,7 +32,7 @@ FEATURE_COLUMNS=REQUIRED_DATA_COLUMNS + ['RSI', 'SMA20',  'SMA70', 'MACD', 'BB_U
 
 SETTING_KEYS=['ticker', 'training_start_date', 'training_end_date', 'model_dir', 'capital_type', 'initial_cash', 'reference_capital', 'capital_percentage',
             'trade_fee', 'lookback', 'batch_size', 'risk_per_trade', 'epochs', 'max_trades_per_epoch', 'max_fee_per_epoch', 'confirmation_steps',
-            'dqn_weight_scale', 'atr_multiplier', 'atr_period', 'atr_smoothing', 'use_smote']
+            'dqn_weight_scale', 'atr_multiplier', 'atr_period', 'atr_smoothing', 'use_smote', 'trading_simulation_delay', 'run_all_at_once']
 
 LOG_LEVEL_METHODS = {
     "ERROR: ": logger.error,
@@ -54,11 +51,15 @@ LOG_HANDLERS = {
 }
 DEFAULT_HEADER = (st.success, ICONS[4])
 
+
 class Utils:
     """Centralized class for utility functions."""
 
     @staticmethod
-    def preprocess_data(df, required_columns=REQUIRED_DATA_COLUMNS, rsi_period=14, macd_params=(12, 26, 9), bb_window=20, volatility_period=14, atr_smoothing=True, rsi_divergence_params={'diff_period': 5, 'smooth_period': 3, 'rsi_threshold': 0.2}):
+    @st.cache_data(ttl=1800)
+    def preprocess_data(df, required_columns=REQUIRED_DATA_COLUMNS, rsi_period=14,
+                        macd_params=(12, 26, 9), bb_window=20, volatility_period=14, atr_smoothing=True,
+                        rsi_divergence_params={'diff_period': 5, 'smooth_period': 3, 'rsi_threshold': 0.2}):
         """
         Preprocess financial data by adding technical indicators incrementally to avoid look-ahead bias.
 

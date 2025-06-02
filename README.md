@@ -60,7 +60,9 @@ Live Trading Simulation use AAPL form 2023-01-01 - 2025-05-25
     "reference_capital": null,
     "capital_percentage": null,
     "epochs": 50,
-    "confirmation_steps": 1
+    "confirmation_steps": 1,
+    "trading_simulation_delay": 3,
+    "run_all_at_once": true
 }
 ```
 

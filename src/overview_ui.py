@@ -48,7 +48,7 @@ def render_overview(agent, settings):
         st.subheader("Model Training Summary")
         if agent:
             st.write(f"Training Date range: {agent.training_start_date} to {agent.training_end_date}")
-            st.write(f"Training Data points: {len(agent.training_data) if agent and agent.training_data is not None and not agent.training_data.empty else "-"}")
+            st.write(f"Training Data points: {len(agent.training_data) if agent and agent.training_data is not None and not agent.training_data.empty else '-'}")
             st.write(f"Training Lookback: {agent.lookback} days")
             
             batch_size = agent.dqn_agent.batch_size if agent and agent.dqn_agent is not None else 64

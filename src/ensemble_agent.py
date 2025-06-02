@@ -22,7 +22,7 @@ np.random.seed(42)
 class EnsembleAgent:
     def __init__(self, ticker, training_start_date, training_end_date, model_dir, lookback, batch_size, initial_cash, trade_fee, risk_per_trade, 
                 max_trades_per_epoch, max_fee_per_epoch, atr_multiplier, atr_period, atr_smoothing, use_smote, dqn_weight_scale, capital_type,
-                reference_capital, capital_percentage, epochs, confirmation_steps, expected_feature_columns=FEATURE_COLUMNS):
+                reference_capital, capital_percentage, epochs, confirmation_steps, trading_simulation_delay, run_all_at_once, expected_feature_columns=FEATURE_COLUMNS):
 
         if max_fee_per_epoch > 0 and max_fee_per_epoch < trade_fee * initial_cash:
             Utils.log_message(f"WARNING: max_fee_per_epoch (€{max_fee_per_epoch:.2f}) may be too low for initial_cash (€{initial_cash:.2f}) and trade_fee ({trade_fee*100:.2f}%)")
@@ -47,6 +47,8 @@ class EnsembleAgent:
         self.capital_percentage = capital_percentage
         self.epochs = epochs
         self.confirmation_steps = confirmation_steps
+        self.trading_simulation_delay = trading_simulation_delay
+        self.run_all_at_once = run_all_at_once
         self.expected_feature_columns = expected_feature_columns
         if not model_dir or not isinstance(model_dir, str):
             raise ValueError("model_dir must be a non-empty string")
@@ -153,7 +155,9 @@ class EnsembleAgent:
             'reference_capital': settings['reference_capital'] if settings else self.reference_capital,
             'capital_percentage': settings['capital_percentage'] if settings else self.capital_percentage,
             'epochs': settings['epochs'] if settings else self.epochs,
-            'confirmation_steps': settings['confirmation_steps'] if settings else self.confirmation_steps
+            'confirmation_steps': settings['confirmation_steps'] if settings else self.confirmation_steps,
+            'trading_simulation_delay': settings['trading_simulation_delay'] if settings else 5,
+            'run_all_at_once': settings['run_all_at_once'] if settings else False,
         }
         try:
             os.makedirs(self.model_dir, exist_ok=True)
@@ -187,6 +191,8 @@ class EnsembleAgent:
             self.capital_percentage = settings.get('capital_percentage', self.capital_percentage)
             self.epochs = settings.get('epochs', self.epochs)
             self.confirmation_steps = settings.get('confirmation_steps', self.confirmation_steps)
+            self.trading_simulation_delay = settings.get('trading_simulation_delay', self.trading_simulation_delay)
+            self.run_all_at_once = settings.get('run_all_at_once', self.run_all_at_once)
             Utils.log_message(f"INFO: Loaded ensemble settings from {self.settings_save_path}: {settings}")
             return settings
         else:
@@ -269,6 +275,8 @@ class EnsembleAgent:
             'capital_percentage': self.capital_percentage,
             'epochs': self.epochs,
             'confirmation_steps': self.confirmation_steps,
+            'trading_simulation_delay': self.trading_simulation_delay,
+            'run_all_at_once': self.run_all_at_once
         }
 
     def has_pretrained_model(self):
@@ -672,7 +680,9 @@ class EnsembleAgent:
             'reference_capital': self.reference_capital,
             'capital_percentage': self.capital_percentage,
             'epochs': self.epochs,
-            'confirmation_steps': self.confirmation_steps
+            'confirmation_steps': self.confirmation_steps,
+            'trading_simulation_delay': self.trading_simulation_delay,
+            'run_all_at_once': self.run_all_at_once
         }
         mismatches = []
         for key in current_settings:
@@ -799,7 +809,9 @@ class EnsembleAgent:
             reference_capital=settings['reference_capital'],
             capital_percentage=settings['capital_percentage'],
             epochs=settings['epochs'],
-            confirmation_steps=settings['confirmation_steps']
+            confirmation_steps=settings['confirmation_steps'],
+            trading_simulation_delay=settings['trading_simulation_delay'],
+            run_all_at_once=settings['run_all_at_once']
         )
 
         Utils.log_message(f"INFO: Initializing new EnsembleAgent for {agent.ticker} between {agent.training_start_date} and {agent.training_end_date}: {settings}")

@@ -16,8 +16,6 @@ from itertools import product
 from calculations import Calculations
 from utils import Utils, FEATURE_COLUMNS
 
-# Set seeds for reproducibility
-np.random.seed(42)
 
 class RFAgent:
     def __init__(self, ticker, training_start_date, training_end_date, model_dir, lookback, trade_fee, use_smote, expected_feature_columns=FEATURE_COLUMNS):

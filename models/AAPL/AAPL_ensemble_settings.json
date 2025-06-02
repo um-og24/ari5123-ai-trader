@@ -18,5 +18,7 @@
     "reference_capital": null,
     "capital_percentage": null,
     "epochs": 50,
-    "confirmation_steps": 1
+    "confirmation_steps": 1,
+    "trading_simulation_delay": 1,
+    "run_all_at_once": false
 }

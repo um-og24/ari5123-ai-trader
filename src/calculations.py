@@ -8,9 +8,7 @@ import pandas as pd
 from utils import Utils
 from sklearn.decomposition import PCA
 from imblearn.over_sampling import SMOTE
-    
-# Set seeds for reproducibility
-np.random.seed(42)
+
 
 class Calculations:
     """Centralized class for computing divers calculations."""

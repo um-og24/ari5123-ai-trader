@@ -17,9 +17,6 @@ from itertools import product
 from utils import Utils, FEATURE_COLUMNS
 from calculations import Calculations
 
-# Set seeds for reproducibility
-random.seed(42)
-np.random.seed(42)
 
 class DQNAgent:
     def __init__(self, ticker, training_start_date, training_end_date, model_dir, lookback, batch_size, initial_cash, trade_fee, risk_per_trade, atr_multiplier, atr_period, atr_smoothing, expected_feature_columns=FEATURE_COLUMNS):
@@ -78,6 +75,7 @@ class DQNAgent:
 
     def _build_model(self):
         def build():
+            tf.keras.utils.set_random_seed(42)  # Reinforce seed
             model = tf.keras.Sequential([
                 # Input shape: (lookback, num_features)
                 tf.keras.layers.Input(shape=(self.lookback, len(self.expected_feature_columns))),
@@ -86,10 +84,10 @@ class DQNAgent:
                 # Normalize to stabilize training
                 tf.keras.layers.LayerNormalization(),
                 # Dropout to prevent overfitting
-                tf.keras.layers.Dropout(0.3),
+                tf.keras.layers.Dropout(0.3, seed=42),
                 # Dense layer for feature extraction
                 tf.keras.layers.Dense(32, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.01)),
-                tf.keras.layers.Dropout(0.2),
+                tf.keras.layers.Dropout(0.2, seed=42),
                 # Output layer for Q-values (i.e. hold, buy, sell)
                 tf.keras.layers.Dense(3, activation='linear')
             ])
