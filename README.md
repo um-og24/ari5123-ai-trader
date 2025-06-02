@@ -38,7 +38,7 @@ Live Trading Simulation use AAPL form 2023-01-01 - 2025-05-25
 
 ## Settings for Reproducibility
 
-- `AAPL_ensemble_settings.json`:
+- `models\AAPL\AAPL_ensemble_settings.json`:
 ```json
 {
     "ticker": "AAPL",
