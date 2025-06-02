@@ -34,3 +34,32 @@ Access the interface at `http://localhost:8501`.
 Use AAPL training data from 2017-01-01 – 2022-12-31
 
 Live Trading Simulation use AAPL form 2023-01-01 - 2025-05-25
+
+
+## Settings for Reproducibility
+
+- `AAPL_ensemble_settings.json`:
+```json
+{
+    "ticker": "AAPL",
+    "training_start_date": "2017-01-01T00:00:00",
+    "training_end_date": "2022-12-31T00:00:00",
+    "lookback": 14,
+    "batch_size": 32,
+    "initial_cash": 1000,
+    "trade_fee": 5e-05,
+    "risk_per_trade": 0.02,
+    "max_trades_per_epoch": 0,
+    "max_fee_per_epoch": 0,
+    "atr_multiplier": 1.5,
+    "atr_period": 14,
+    "atr_smoothing": true,
+    "use_smote": false,
+    "dqn_weight_scale": 0.6,
+    "capital_type": "Explicit Value",
+    "reference_capital": null,
+    "capital_percentage": null,
+    "epochs": 50,
+    "confirmation_steps": 1
+}
+```
