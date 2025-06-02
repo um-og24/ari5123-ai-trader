@@ -16,9 +16,9 @@ Upgrade pip with: `pip install --upgrade pip`
 Install via: `pip install -r requirements.txt`
 
 ## Execution
-Run the Streamlit app: `streamlit run src/main.py`
+Run the Streamlit app: `streamlit run src/main.py --server.port 8506`
 
-Access the interface at `http://localhost:8501`.
+Access the interface at `http://localhost:8506`.
 
 ## Structure
 - `main.py`: Streamlit app entry point.
