@@ -874,7 +874,7 @@ class ChartBuilder:
             st.plotly_chart(fig, key=f"dist_kde_{context}", use_container_width=True)
         except Exception as e:
             Utils.log_message(f"ERROR: Error plotting distribution with KDE: {e}")
-            st.plotly_chart(go.Figure, key=f"error_dist_kde_{context}")
+            #st.plotly_chart(go.Figure, key=f"error_dist_kde_{context}")
 
     @staticmethod
     @st.cache_data(ttl=1800)
