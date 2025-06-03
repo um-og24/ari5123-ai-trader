@@ -571,7 +571,6 @@ class ChartBuilder:
         st.plotly_chart(fig, use_container_width=True)
 
     @staticmethod
-    @st.cache_data(ttl=1800)
     def plot_portfolio_over_time(portfolio_values, chart_placeholder):
         if portfolio_values:
             fig = go.Figure()
@@ -592,7 +591,6 @@ class ChartBuilder:
             chart_placeholder.plotly_chart(fig, use_container_width=True)
     
     @staticmethod
-    @st.cache_data(ttl=1800)
     def plot_training_metrics(epoch_metrics, metrics_table_placeholder, chart_placeholder):
         if epoch_metrics:
             with metrics_table_placeholder.container():
