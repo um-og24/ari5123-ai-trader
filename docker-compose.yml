@@ -4,6 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile
     image: owengauci24/ari5123-ai-trader-app:latest
+    pull_policy: always
     container_name: ari5123-ai-trader-app-container
     environment:
       - PYTHONUNBUFFERED=1
